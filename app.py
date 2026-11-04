@@ -29,6 +29,8 @@ if "selected_category" not in st.session_state:
     st.session_state.selected_category = "-- All Categories --"
 if "active_search_query" not in st.session_state:
     st.session_state.active_search_query = ""
+if "scroll_to_anchor" not in st.session_state:
+    st.session_state.scroll_to_anchor = ""
 
 
 # --- 3. DATA LOADING & BM25 LEXICAL INDEXING ---
@@ -52,7 +54,6 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
                     obj = json.loads(line)
                     if not obj.get("lookup_key"):
                         obj["lookup_key"] = f"CASE_{idx + 1}"
-                    # Composite unique ID for multi-version cases (same G.R. + different category)
                     obj["_uid"] = f"{obj.get('lookup_key', idx)}::{obj.get('category', '')}::{idx}"
                     cases.append(obj)
                 except Exception:
@@ -68,25 +69,50 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
     return cases, bm25, tokenized_corpus
 
 
-# --- 4. MARKDOWN DIGEST PARSER & STRUCTURED EXTRACTOR ---
-MAJOR_SEC_PATTERN = re.compile(
+# --- 4. MARKDOWN DIGEST PARSER & STRICT SECTION CLASSIFIER ---
+# Only match canonical 7+1 Section Titles so numbered items inside sections are NEVER mistaken for major sections
+CANONICAL_SEC_KEYWORDS = {
+    "1": ("case header", "cast of characters", "procedural posture"),
+    "2": ("syllabus topic", "codal provision", "factual trigger"),
+    "3": ("chronological facts", "facts storyboard", "factual background"),
+    "4": ("party arguments", "arguments matrix", "exhaustive party"),
+    "5": ("inventory of issues", "complete inventory", "issues found"),
+    "6": ("deep-dive verdict", "ratio decidendi", "verdict & ratio"),
+    "6.5": ("subject-specific", "doctrinal & recitation", "recitation spotlight"),
+    "7": ("separate opinions", "overall verdict", "fallo"),
+}
+
+MAJOR_SEC_CANDIDATE_RE = re.compile(
     r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?)[.)]?\s+(.+?)(?:\*\*)?\s*$"
 )
 
+# Capture inline labels where ** wraps either the label alone OR wraps "Label:** Value"
 INLINE_LABEL_PATTERN = re.compile(
-    r"^(?:\*\*)?("
+    r"^\s*(?:[-•*]\s*)?(?:\*\*)?("
     r"Concise Recognizable Title|Full Official Caption|Citation & Metadata|"
     r"Key Parties & Roles(?:\s*\(The Cast\))?|How the Case Reached the Supreme Court|"
     r"Primary Topic Hierarchy|Secondary Topic Hierarchy(?:\s*\(if any\))?|"
-    r"Full Text of Governing[^:]*|Historical Landmark Rule|"
+    r"Full Text of Governing[^:*]*|Historical Landmark Rule|"
     r"Factual Trigger(?:\s*\(Application to the Story\))?|"
     r"Main Thesis|Specific Contentions|Recitation-Ready Question|"
-    r"Assigned Course & Syllabus Focus|Doctrinal Requisites[^:]*|"
-    r"Subject-Specific Terms of Art[^:]*|Cold-Call Synthesis[^:]*|"
+    r"Assigned Course & Syllabus Focus|Doctrinal Requisites[^:*]*|"
+    r"Subject-Specific Terms of Art[^:*]*|Cold-Call Synthesis[^:*]*|"
     r"Separate Opinions Summary|Verbatim/Near-Verbatim Fallo|Plain-Language Outcome"
-    r")(?:\*\*)?\s*:\s*(.*)$",
+    r")(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*)$",
     re.IGNORECASE,
 )
+
+
+def is_canonical_major_section(sec_num: str, sec_title: str, raw_line: str) -> bool:
+    """Strictly verifies that a numbered line is actually one of the 7+1 major sections."""
+    t_lower = sec_title.lower()
+    expected = CANONICAL_SEC_KEYWORDS.get(sec_num, ())
+    if any(k in t_lower for k in expected):
+        return True
+    # Also accept if explicitly marked with ### 1. ... and short
+    if raw_line.strip().startswith("#") and len(sec_title) < 95:
+        return True
+    return False
 
 
 def slugify(text: str) -> str:
@@ -94,12 +120,24 @@ def slugify(text: str) -> str:
     return clean or "section"
 
 
+def clean_stray_asterisks(text: str) -> str:
+    """Strips stray leading/trailing ** and unmatched ** markers from extracted values."""
+    s = text.strip()
+    # Remove leading or trailing **
+    s = re.sub(r"^\*+\s*", "", s)
+    s = re.sub(r"\s*\*+$", "", s)
+    # If there is an odd number of ** remaining, strip stray unmatched **
+    if s.count("**") % 2 == 1:
+        s = s.replace("**", "")
+    return s.strip()
+
+
 def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
     """
     Parses a standardized 7+1 Full-Text Substitute digest into:
-    - sections: list of {num, title, anchor, raw_lines, subsections}
-    - metadata_map: extracted key-value fields from Section 1, Section 2, Section 6.5, Section 7
-    - quotes: list of extracted verbatim blockquotes / golden quotes
+    - sections: list of {num, title, short_title, anchor, lines}
+    - metadata: extracted key-value fields
+    - quotes: list of extracted verbatim quotes
     - issues: list of extracted issues from Section 5
     """
     lines = digest_text.splitlines()
@@ -117,14 +155,13 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
                 current_sec["lines"].append("")
             continue
 
-        # Check if line is a major section heading (1 through 7, including 6.5)
         heading_candidate = re.sub(r"^#{1,4}\s*", "", stripped)
         heading_candidate_clean = re.sub(r"^\*\*|\*\*$", "", heading_candidate).strip()
-        m_sec = MAJOR_SEC_PATTERN.match(heading_candidate_clean)
+        m_sec = MAJOR_SEC_CANDIDATE_RE.match(heading_candidate_clean)
 
-        if m_sec and len(heading_candidate_clean) < 120:
+        if m_sec and is_canonical_major_section(m_sec.group(1), m_sec.group(2), stripped):
             sec_num = m_sec.group(1)
-            sec_title = m_sec.group(2).strip("* ").strip()
+            sec_title = clean_stray_asterisks(m_sec.group(2))
             anchor_id = f"sec-{sec_num.replace('.', '-')}-{slugify(sec_title)[:28]}"
             current_sec = {
                 "num": sec_num,
@@ -136,37 +173,23 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
             sections.append(current_sec)
             continue
 
-        # Also catch generic ### markdown headings if a digest uses custom headers
-        if stripped.startswith("### ") and current_sec is None:
-            h_text = stripped.lstrip("#").strip("* ").strip()
-            anchor_id = f"sec-{slugify(h_text)[:32]}"
-            current_sec = {
-                "num": "•",
-                "title": h_text,
-                "short_title": h_text,
-                "anchor": anchor_id,
-                "lines": [],
-            }
-            sections.append(current_sec)
-            continue
-
         if current_sec is None:
             current_sec = {
-                "num": "0",
-                "title": "Case Overview",
+                "num": "1",
+                "title": "1. Case Overview",
                 "short_title": "Case Overview",
-                "anchor": "sec-overview",
+                "anchor": "sec-1-overview",
                 "lines": [],
             }
             sections.append(current_sec)
 
         current_sec["lines"].append(raw_line)
 
-        # Extract key inline metadata fields
+        # Extract key inline metadata fields cleanly
         m_label = INLINE_LABEL_PATTERN.match(stripped)
         if m_label:
             k_raw = m_label.group(1).strip().lower()
-            v_raw = re.sub(r"^\*\*|\*\*$", "", m_label.group(2).strip()).strip()
+            v_raw = clean_stray_asterisks(m_label.group(2))
             if "concise recognizable title" in k_raw:
                 metadata_map["concise_title"] = v_raw
             elif "full official caption" in k_raw:
@@ -195,12 +218,18 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
         # Collect issues in Section 5
         if current_sec["num"] == "5":
             if re.match(r"^\d+[.)]\s+", stripped) or "whether or not" in stripped.lower():
-                issues.append(re.sub(r"^\*\*|\*\*$", "", stripped))
+                issues.append(clean_stray_asterisks(stripped))
 
         # Collect Golden Verbatim Quotes
         if "golden verbatim quote" in stripped.lower() or stripped.startswith(">"):
             q_clean = re.sub(r"^>\s*", "", stripped)
-            q_clean = re.sub(r"^(?:\*\*)?\(?c\)?\s*Golden Verbatim Quote(?:s)?(?:\*\*)?\s*:\s*", "", q_clean, flags=re.IGNORECASE).strip()
+            q_clean = re.sub(
+                r"^(?:\*\*)?\(?c\)?\s*Golden Verbatim Quote(?:s)?(?:\*\*)?\s*:\s*(?:\*\*)?\s*",
+                "",
+                q_clean,
+                flags=re.IGNORECASE,
+            )
+            q_clean = clean_stray_asterisks(q_clean)
             if len(q_clean) > 25:
                 quotes.append(q_clean)
 
@@ -213,12 +242,23 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
 
 
 def format_inline_markdown(text: str, highlight_terms: Optional[List[str]] = None) -> str:
-    """Safely converts Markdown bold/italic/code into styled HTML and highlights search terms."""
-    escaped = html.escape(text)
-    # Bold **text**
+    """Safely converts Markdown bold/italic into styled HTML, strips stray **, and highlights search terms."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    # Strip stray leading ": **" or "** " at the start of a fragment
+    cleaned = re.sub(r"^:\s*\*\*\s*", "", cleaned)
+    cleaned = re.sub(r"^\*\*\s+", "", cleaned)
+    cleaned = re.sub(r"\s+\*\*$", "", cleaned)
+
+    escaped = html.escape(cleaned)
+    # Paired **bold**
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
-    # Italic *text*
+    # Remove any leftover unmatched ** so raw asterisks never appear in the reader
+    escaped = escaped.replace("**", "")
+    # Paired *italic*
     escaped = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<em>\1</em>", escaped)
+
     # Badges like [PRIMARY SYLLABUS ISSUE] or [Procedural / Secondary Issue]
     escaped = re.sub(
         r"\[(PRIMARY SYLLABUS ISSUE)\]",
@@ -241,7 +281,7 @@ def format_inline_markdown(text: str, highlight_terms: Optional[List[str]] = Non
 
 
 def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms: Optional[List[str]] = None) -> str:
-    """Renders the lines of a digest section into structured, high-readability legal HTML."""
+    """Renders the lines of a digest section into single-line, zero-indentation HTML (preventing Markdown code-block bugs)."""
     html_parts: List[str] = []
     for raw in lines:
         s = raw.strip()
@@ -250,115 +290,104 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
 
         # Clean stray markdown h3/h4 inside section
         if s.startswith("###") or s.startswith("####"):
-            sub_h = s.lstrip("#").strip("* ").strip()
+            sub_h = clean_stray_asterisks(s.lstrip("#").strip())
             html_parts.append(f"<h4 class='digest-subheading'>{format_inline_markdown(sub_h, highlight_terms)}</h4>")
             continue
 
         # Sub-headings like A. Petitioner's Arguments / B. Respondent's Arguments
         if re.match(r"^(?:\*\*)?[A-Z]\.[\s]+(?:Petitioner|Respondent|Public|Private|OSG|Accused|Defense)", s):
-            clean_sub = re.sub(r"^\*\*|\*\*$", "", s)
+            clean_sub = clean_stray_asterisks(s)
             html_parts.append(f"<div class='party-header'>{format_inline_markdown(clean_sub, highlight_terms)}</div>")
             continue
 
         # Issue breakdown sub-parts: (a) Issue & Short Answer, (b) Step-by-Step Ratio, (c) Golden Verbatim Quote, (d) Plain-Language
-        m_sub = re.match(r"^(?:\*\*)?(\([a-d]\)\s*[^:]+)(?:\*\*)?\s*:\s*(.*)$", s, re.IGNORECASE)
+        m_sub = re.match(
+            r"^(?:\*\*)?(\([a-d]\)\s*[^:*]+)(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*)$",
+            s,
+            re.IGNORECASE,
+        )
         if m_sub:
-            sub_label = re.sub(r"^\*\*|\*\*$", "", m_sub.group(1)).strip()
-            sub_rest = m_sub.group(2).strip()
+            sub_label = clean_stray_asterisks(m_sub.group(1))
+            sub_rest = clean_stray_asterisks(m_sub.group(2))
             lower_lbl = sub_label.lower()
             if "(c)" in lower_lbl or "verbatim quote" in lower_lbl:
                 html_parts.append(
-                    f"<div class='quote-callout'>"
-                    f"<div class='quote-callout-label'>📜 {html.escape(sub_label)}</div>"
-                    f"<div class='quote-callout-body'>{format_inline_markdown(sub_rest, highlight_terms)}</div>"
-                    f"</div>"
+                    f"<div class='quote-callout'><div class='quote-callout-label'>📜 {html.escape(sub_label)}</div><div class='quote-callout-body'>{format_inline_markdown(sub_rest, highlight_terms)}</div></div>"
                 )
             elif "(d)" in lower_lbl or "recit-ready" in lower_lbl or "plain-language" in lower_lbl:
                 html_parts.append(
-                    f"<div class='recit-callout'>"
-                    f"<span class='recit-label'>🎯 {html.escape(sub_label)}:</span> "
-                    f"{format_inline_markdown(sub_rest, highlight_terms)}"
-                    f"</div>"
+                    f"<div class='recit-callout'><span class='recit-label'>🎯 {html.escape(sub_label)}:</span> {format_inline_markdown(sub_rest, highlight_terms)}</div>"
                 )
             elif "(a)" in lower_lbl:
                 html_parts.append(
-                    f"<div class='issue-verdict-banner'>"
-                    f"<span class='verdict-tag'>{html.escape(sub_label)}:</span> "
-                    f"{format_inline_markdown(sub_rest, highlight_terms)}"
-                    f"</div>"
+                    f"<div class='issue-verdict-banner'><span class='verdict-tag'>{html.escape(sub_label)}:</span> {format_inline_markdown(sub_rest, highlight_terms)}</div>"
                 )
             else:
                 html_parts.append(
-                    f"<p class='digest-p'><strong class='inline-lead'>{html.escape(sub_label)}:</strong> "
-                    f"{format_inline_markdown(sub_rest, highlight_terms)}</p>"
+                    f"<p class='digest-p'><strong class='inline-lead'>{html.escape(sub_label)}:</strong> {format_inline_markdown(sub_rest, highlight_terms)}</p>"
                 )
             continue
 
         # Blockquotes
         if s.startswith(">"):
-            q_body = s.lstrip(">").strip()
-            html_parts.append(
-                f"<blockquote class='legal-blockquote'>{format_inline_markdown(q_body, highlight_terms)}</blockquote>"
-            )
+            q_body = clean_stray_asterisks(s.lstrip(">").strip())
+            html_parts.append(f"<blockquote class='legal-blockquote'>{format_inline_markdown(q_body, highlight_terms)}</blockquote>")
             continue
 
-        # Section 3 Chronological Timeline Entries: **[Date / Phase]:** Event
-        if sec_num == "3" and re.match(r"^\*\*[^*]+\*\*\s*:?", s):
-            m_time = re.match(r"^\*\*([^*]+?)\*\*\s*:?\s*(.*)$", s)
+        # Section 3 Chronological Timeline Entries: **[Date / Phase]:** Event OR **Date:** Event
+        if sec_num == "3" and s.startswith("**"):
+            m_time = re.match(r"^\*\*([^*:]+?)(?::)?\*\*\s*:?\s*(.*)$", s)
             if m_time:
-                dt_label = m_time.group(1).strip(": ").strip()
-                ev_body = m_time.group(2).strip()
+                dt_label = clean_stray_asterisks(m_time.group(1).strip(": "))
+                ev_body = clean_stray_asterisks(m_time.group(2))
                 html_parts.append(
-                    f"<div class='timeline-row'>"
-                    f"<div class='timeline-date'>{html.escape(dt_label)}</div>"
-                    f"<div class='timeline-event'>{format_inline_markdown(ev_body, highlight_terms)}</div>"
-                    f"</div>"
+                    f"<div class='timeline-row'><div class='timeline-date'>{html.escape(dt_label)}</div><div class='timeline-event'>{format_inline_markdown(ev_body, highlight_terms)}</div></div>"
                 )
                 continue
 
-        # Standard Inline Labels (Concise Recognizable Title:, Main Thesis:, etc.)
+        # Standard Inline Labels (Concise Recognizable Title:, Citation & Metadata:, etc.)
         m_inline = INLINE_LABEL_PATTERN.match(s)
         if m_inline:
-            lbl = re.sub(r"^\*\*|\*\*$", "", m_inline.group(1)).strip()
-            val = m_inline.group(2).strip()
+            lbl = clean_stray_asterisks(m_inline.group(1))
+            val = clean_stray_asterisks(m_inline.group(2))
             if "factual trigger" in lbl.lower():
                 html_parts.append(
-                    f"<div class='trigger-box'>"
-                    f"<div class='trigger-title'>⚡ {html.escape(lbl)}</div>"
-                    f"<div class='trigger-text'>{format_inline_markdown(val, highlight_terms)}</div>"
-                    f"</div>"
+                    f"<div class='trigger-box'><div class='trigger-title'>⚡ {html.escape(lbl)}</div><div class='trigger-text'>{format_inline_markdown(val, highlight_terms)}</div></div>"
                 )
             elif "verbatim/near-verbatim fallo" in lbl.lower():
                 html_parts.append(
-                    f"<div class='fallo-box'>"
-                    f"<div class='fallo-title'>⚖️ {html.escape(lbl)}</div>"
-                    f"<div class='fallo-text'>{format_inline_markdown(val, highlight_terms)}</div>"
-                    f"</div>"
+                    f"<div class='fallo-box'><div class='fallo-title'>⚖️ {html.escape(lbl)}</div><div class='fallo-text'>{format_inline_markdown(val, highlight_terms)}</div></div>"
                 )
             else:
                 html_parts.append(
-                    f"<p class='digest-p'><strong class='inline-lead'>{html.escape(lbl)}:</strong> "
-                    f"{format_inline_markdown(val, highlight_terms)}</p>"
+                    f"<p class='digest-p'><strong class='inline-lead'>{html.escape(lbl)}:</strong> {format_inline_markdown(val, highlight_terms)}</p>"
                 )
             continue
 
-        # Numbered items (e.g. Issues list 1., 2., 3.)
-        m_num = re.match(r"^(\d{1,2}[.)])\s+(.+)$", s)
+        # Generic "**Label:** Value" or "**Label**: Value" fallback
+        m_generic_bold_label = re.match(r"^\*\*([^\*:\n]{2,65}?)(?::)?\*\*\s*:?\s+(.+)$", s)
+        if m_generic_bold_label:
+            g_lbl = clean_stray_asterisks(m_generic_bold_label.group(1).rstrip(":"))
+            g_val = clean_stray_asterisks(m_generic_bold_label.group(2))
+            html_parts.append(
+                f"<p class='digest-p'><strong class='inline-lead'>{html.escape(g_lbl)}:</strong> {format_inline_markdown(g_val, highlight_terms)}</p>"
+            )
+            continue
+
+        # Numbered items (e.g. Issues list 1., 2., 3. or arguments)
+        m_num = re.match(r"^(?:\*\*)?(\d{1,2}[.)])(?:\*\*)?\s+(.+)$", s)
         if m_num:
             num_badge = m_num.group(1)
-            rest_txt = m_num.group(2)
+            rest_txt = clean_stray_asterisks(m_num.group(2))
             html_parts.append(
-                f"<div class='numbered-item'>"
-                f"<span class='num-circle'>{html.escape(num_badge)}</span>"
-                f"<div class='num-content'>{format_inline_markdown(rest_txt, highlight_terms)}</div>"
-                f"</div>"
+                f"<div class='numbered-item'><span class='num-circle'>{html.escape(num_badge)}</span><div class='num-content'>{format_inline_markdown(rest_txt, highlight_terms)}</div></div>"
             )
             continue
 
         # Default paragraph
         html_parts.append(f"<p class='digest-p'>{format_inline_markdown(s, highlight_terms)}</p>")
 
-    return "\n".join(html_parts)
+    return "".join(html_parts)
 
 
 def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) -> str:
@@ -382,17 +411,16 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
     return format_inline_markdown(snippet, query_tokens)
 
 
-# --- 5. THEME & RESPONSIVE CSS INJECTION ---
+# --- 5. THEME, WIDGET CONTRAST & RESPONSIVE CSS INJECTION ---
 def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
     is_dark = theme == "Dark"
 
-    # Font scaling map
     scale_map = {
-        "Compact": ("16px", "28px", "19px"),
-        "Standard": ("17.5px", "32px", "21px"),
-        "Comfortable": ("19.5px", "35px", "23px"),
+        "Compact": ("15.5px", "26px", "18.5px"),
+        "Standard": ("17.5px", "31px", "20.5px"),
+        "Comfortable": ("20px", "35px", "23px"),
     }
-    body_px, title_px, h3_px = scale_map.get(font_scale, ("17.5px", "32px", "21px"))
+    body_px, title_px, h3_px = scale_map.get(font_scale, ("17.5px", "31px", "20.5px"))
 
     if is_dark:
         colors = {
@@ -401,20 +429,25 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             "--bg-elevated": "#263349",
             "--bg-sidebar": "#131C2E",
             "--bg-header": "#0B1120",
+            "--bg-input": "#1E293B",
             "--text-primary": "#F1F5F9",
             "--text-secondary": "#CBD5E1",
             "--text-muted": "#94A3B8",
             "--accent-navy": "#93C5FD",
-            "--accent-primary": "#3B82F6",
+            "--accent-primary": "#60A5FA",
             "--accent-sage": "#5EEAD4",
-            "--accent-gold": "#D4AF37",
+            "--accent-gold": "#EAB308",
             "--border-subtle": "#334155",
-            "--callout-blue-bg": "rgba(59, 130, 246, 0.12)",
-            "--callout-green-bg": "rgba(20, 184, 166, 0.12)",
-            "--callout-gold-bg": "rgba(212, 175, 55, 0.14)",
-            "--mark-bg": "rgba(234, 179, 8, 0.35)",
+            "--callout-blue-bg": "rgba(59, 130, 246, 0.15)",
+            "--callout-green-bg": "rgba(20, 184, 166, 0.14)",
+            "--callout-gold-bg": "rgba(234, 179, 8, 0.15)",
+            "--mark-bg": "rgba(250, 204, 21, 0.35)",
             "--mark-text": "#FEF08A",
-            "--shadow-card": "0 8px 24px rgba(0, 0, 0, 0.35)",
+            "--btn-bg": "#1E293B",
+            "--btn-text": "#F8FAFC",
+            "--btn-border": "#475569",
+            "--btn-hover-bg": "#334155",
+            "--shadow-card": "0 8px 24px rgba(0, 0, 0, 0.38)",
         }
     else:
         colors = {
@@ -423,6 +456,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             "--bg-elevated": "#F9F8F5",
             "--bg-sidebar": "#F0F1EF",
             "--bg-header": "#172C3F",
+            "--bg-input": "#FFFFFF",
             "--text-primary": "#25313B",
             "--text-secondary": "#334155",
             "--text-muted": "#64748B",
@@ -430,13 +464,17 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             "--accent-primary": "#1E3A5F",
             "--accent-sage": "#56716D",
             "--accent-gold": "#C6A66A",
-            "--border-subtle": "#E5E7EB",
+            "--border-subtle": "#DCE0E5",
             "--callout-blue-bg": "#EAF1F8",
             "--callout-green-bg": "#EAF3EE",
             "--callout-gold-bg": "#F7F0E5",
             "--mark-bg": "#FEF08A",
             "--mark-text": "#172C3F",
-            "--shadow-card": "0 2px 12px rgba(23, 44, 63, 0.05)",
+            "--btn-bg": "#FFFFFF",
+            "--btn-text": "#172C3F",
+            "--btn-border": "#CBD5E1",
+            "--btn-hover-bg": "#EAF1F8",
+            "--shadow-card": "0 2px 12px rgba(23, 44, 63, 0.06)",
         }
 
     css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
@@ -444,19 +482,15 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
     focus_css = ""
     if focus_mode:
         focus_css = """
-        section[data-testid="stSidebar"] {
-            display: none !important;
-        }
-        .reader-sheet {
-            max-width: 820px !important;
-            margin: 0 auto !important;
-        }
+        section[data-testid="stSidebar"] { display: none !important; }
+        .reader-sheet { max-width: 820px !important; margin: 0 auto !important; }
         """
 
     st.markdown(
-        f"""
-        <style>
+        f"""<style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+        html {{ scroll-behavior: smooth; }}
 
         :root {{
 {css_vars}
@@ -475,25 +509,97 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             font-family: var(--font-ui) !important;
         }}
 
-        /* Top Native Streamlit Bar */
         header[data-testid="stHeader"] {{
             background-color: var(--bg-app) !important;
             border-bottom: 1px solid var(--border-subtle);
         }}
 
-        /* Reduce excessive top padding */
         .block-container {{
-            padding-top: 1.5rem !important;
+            padding-top: 1.4rem !important;
             padding-bottom: 4rem !important;
             max-width: 1440px !important;
         }}
 
-        /* Sidebar Styling (The Filing Cabinet) */
+        /* Sidebar Styling & High-Contrast Controls */
         section[data-testid="stSidebar"] {{
             background-color: var(--bg-sidebar) !important;
             border-right: 1px solid var(--border-subtle) !important;
         }}
-        section[data-testid="stSidebar"] * {{
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3,
+        section[data-testid="stSidebar"] h4,
+        section[data-testid="stSidebar"] h5 {{
+            color: var(--text-primary) !important;
+        }}
+
+        /* Streamlit Native Buttons, Inputs, Selectboxes, Expanders (Light & Dark Mode Contrast) */
+        .stButton > button {{
+            background-color: var(--btn-bg) !important;
+            color: var(--btn-text) !important;
+            border: 1px solid var(--btn-border) !important;
+            border-radius: 7px !important;
+            font-family: var(--font-ui) !important;
+            font-weight: 600 !important;
+            font-size: 0.84rem !important;
+            transition: all 0.15s ease !important;
+        }}
+        .stButton > button:hover {{
+            background-color: var(--btn-hover-bg) !important;
+            border-color: var(--accent-navy) !important;
+            color: var(--accent-navy) !important;
+        }}
+        .stButton > button p, .stButton > button span {{
+            color: inherit !important;
+        }}
+
+        /* Text Inputs & Selectboxes in Both Modes */
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="select"] > div {{
+            background-color: var(--bg-input) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--btn-border) !important;
+            border-radius: 7px !important;
+        }}
+        div[data-baseweb="input"] input {{
+            color: var(--text-primary) !important;
+            -webkit-text-fill-color: var(--text-primary) !important;
+        }}
+        div[data-baseweb="input"] input::placeholder {{
+            color: var(--text-muted) !important;
+            -webkit-text-fill-color: var(--text-muted) !important;
+            opacity: 1 !important;
+        }}
+        div[data-baseweb="select"] span,
+        div[data-baseweb="select"] div {{
+            color: var(--text-primary) !important;
+        }}
+        ul[data-baseweb="menu"], div[data-baseweb="popover"] {{
+            background-color: var(--bg-surface) !important;
+            color: var(--text-primary) !important;
+            border: 1px solid var(--border-subtle) !important;
+        }}
+        li[role="option"] {{
+            background-color: var(--bg-surface) !important;
+            color: var(--text-primary) !important;
+        }}
+        li[role="option"]:hover {{
+            background-color: var(--btn-hover-bg) !important;
+        }}
+
+        /* Expanders */
+        details[data-testid="stExpander"] {{
+            background-color: var(--bg-surface) !important;
+            border: 1px solid var(--border-subtle) !important;
+            border-radius: 8px !important;
+        }}
+        details[data-testid="stExpander"] summary,
+        details[data-testid="stExpander"] summary p,
+        details[data-testid="stExpander"] summary span,
+        details[data-testid="stExpander"] div {{
             color: var(--text-primary) !important;
         }}
 
@@ -503,7 +609,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: #FFFFFF;
             padding: 1.15rem 1.75rem;
             border-radius: 10px;
-            margin-bottom: 1.25rem;
+            margin-bottom: 1.15rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -512,40 +618,26 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-bottom: 3px solid var(--accent-gold);
             box-shadow: var(--shadow-card);
         }}
-        .masthead-brand {{
-            display: flex;
-            align-items: center;
-            gap: 0.85rem;
-        }}
-        .masthead-icon {{
-            font-size: 1.75rem;
-            line-height: 1;
-        }}
+        .masthead-brand {{ display: flex; align-items: center; gap: 0.85rem; }}
+        .masthead-icon {{ font-size: 1.75rem; line-height: 1; }}
         .masthead-title {{
             font-family: var(--font-serif);
             font-size: 1.45rem;
             font-weight: 700;
             color: #FFFFFF !important;
-            letter-spacing: -0.01em;
             margin: 0;
         }}
         .masthead-subtitle {{
             font-family: var(--font-ui);
             font-size: 0.78rem;
-            color: #CBD5E1;
+            color: #CBD5E1 !important;
             margin: 0;
-            letter-spacing: 0.02em;
         }}
-        .masthead-stats {{
-            display: flex;
-            gap: 0.75rem;
-            align-items: center;
-            flex-wrap: wrap;
-        }}
+        .masthead-stats {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
         .stat-pill {{
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.18);
-            color: #F8FAFC;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            color: #F8FAFC !important;
             font-family: var(--font-mono);
             font-size: 0.75rem;
             padding: 0.3rem 0.7rem;
@@ -561,6 +653,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             max-width: 780px;
             margin: 0 auto 2rem auto;
             box-shadow: var(--shadow-card);
+            color: var(--text-primary);
         }}
 
         /* Breadcrumb & Metadata Badges */
@@ -573,18 +666,17 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
         }}
         .cat-badge {{
             background-color: var(--callout-blue-bg);
-            color: var(--accent-navy);
+            color: var(--accent-navy) !important;
             border: 1px solid var(--border-subtle);
             font-family: var(--font-ui);
             font-size: 0.76rem;
             font-weight: 600;
             padding: 0.25rem 0.7rem;
             border-radius: 6px;
-            letter-spacing: 0.01em;
         }}
         .gr-badge {{
             background-color: var(--callout-gold-bg);
-            color: var(--text-primary);
+            color: var(--text-primary) !important;
             font-family: var(--font-mono);
             font-size: 0.75rem;
             font-weight: 500;
@@ -592,19 +684,19 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 6px;
         }}
 
-        /* Case Title & Metadata Header */
-        .case-main-title {{
-            font-family: var(--font-serif);
-            font-size: var(--title-size);
-            font-weight: 700;
-            color: var(--accent-navy);
-            line-height: 1.25;
-            margin: 0.25rem 0 0.75rem 0;
-            letter-spacing: -0.015em;
+        /* Case Title & Metadata Header (Using !important so Typography Slider overrides Streamlit h1/h3 defaults) */
+        .reader-sheet h1.case-main-title {{
+            font-family: var(--font-serif) !important;
+            font-size: {title_px} !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
+            line-height: 1.25 !important;
+            margin: 0.25rem 0 0.75rem 0 !important;
+            letter-spacing: -0.015em !important;
         }}
         .case-meta-row {{
             font-family: var(--font-ui);
-            font-size: 0.82rem;
+            font-size: 0.84rem;
             color: var(--text-muted);
             padding-bottom: 1.15rem;
             margin-bottom: 1.5rem;
@@ -619,14 +711,13 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             font-weight: 600;
             text-decoration: none;
         }}
-        .source-link:hover {{
-            text-decoration: underline;
-        }}
+        .source-link:hover {{ text-decoration: underline; }}
 
         /* Digest Section Cards & Headings */
         .digest-section-block {{
             margin-top: 2.1rem;
             padding-top: 0.25rem;
+            scroll-margin-top: 85px;
         }}
         .digest-section-header {{
             display: flex;
@@ -635,11 +726,10 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-bottom: 2px solid var(--border-subtle);
             padding-bottom: 0.55rem;
             margin-bottom: 1.1rem;
-            scroll-margin-top: 80px;
         }}
         .sec-num-badge {{
             background-color: var(--bg-header);
-            color: #FFFFFF;
+            color: #FFFFFF !important;
             font-family: var(--font-mono);
             font-size: 0.78rem;
             font-weight: 600;
@@ -647,53 +737,57 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 5px;
             flex-shrink: 0;
         }}
-        .sec-heading-text {{
-            font-family: var(--font-ui);
-            font-size: var(--h3-size);
-            font-weight: 700;
-            color: var(--accent-navy);
-            margin: 0;
-            line-height: 1.3;
+        .reader-sheet h3.sec-heading-text {{
+            font-family: var(--font-ui) !important;
+            font-size: {h3_px} !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
+            margin: 0 !important;
+            line-height: 1.3 !important;
         }}
 
-        /* Legal Body Text (Left-aligned, 1.7 line height) */
-        .legal-prose {{
-            font-family: var(--font-serif);
-            font-size: var(--body-size);
-            line-height: 1.72;
-            color: var(--text-primary);
-            text-align: left;
+        /* Legal Body Text (Explicitly bound to {body_px} with !important so Typography Size slider works) */
+        .reader-sheet .legal-prose,
+        .reader-sheet .digest-p,
+        .reader-sheet .timeline-event,
+        .reader-sheet .num-content,
+        .reader-sheet .trigger-text,
+        .reader-sheet .fallo-text,
+        .reader-sheet .quote-callout-body,
+        .reader-sheet .recit-callout {{
+            font-family: var(--font-serif) !important;
+            font-size: {body_px} !important;
+            line-height: 1.72 !important;
+            color: var(--text-primary) !important;
+            text-align: left !important;
         }}
-        .digest-p {{
-            margin: 0 0 0.95rem 0;
-            text-align: left;
-        }}
+        .digest-p {{ margin: 0 0 0.95rem 0 !important; }}
         .inline-lead {{
-            font-family: var(--font-ui);
-            font-size: 0.92em;
-            color: var(--accent-navy);
-            font-weight: 600;
+            font-family: var(--font-ui) !important;
+            font-size: 0.92em !important;
+            color: var(--accent-navy) !important;
+            font-weight: 700 !important;
         }}
         .digest-subheading {{
-            font-family: var(--font-ui);
-            font-size: 1.05rem;
-            font-weight: 600;
-            color: var(--accent-navy);
-            margin: 1.25rem 0 0.5rem 0;
+            font-family: var(--font-ui) !important;
+            font-size: 1.05em !important;
+            font-weight: 600 !important;
+            color: var(--accent-navy) !important;
+            margin: 1.25rem 0 0.5rem 0 !important;
         }}
         .party-header {{
-            font-family: var(--font-ui);
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: var(--accent-navy);
+            font-family: var(--font-ui) !important;
+            font-size: 0.95rem !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
             background-color: var(--bg-elevated);
             border-left: 3px solid var(--accent-sage);
-            padding: 0.45rem 0.85rem;
-            margin: 1rem 0 0.65rem 0;
+            padding: 0.5rem 0.9rem;
+            margin: 1.1rem 0 0.7rem 0;
             border-radius: 0 6px 6px 0;
         }}
 
-        /* Specialized Callouts (Factual Trigger, Quotes, Recit Ready, Fallo) */
+        /* Specialized Callouts */
         .trigger-box {{
             background-color: var(--callout-green-bg);
             border-left: 4px solid var(--accent-sage);
@@ -702,19 +796,13 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin: 1rem 0 1.35rem 0;
         }}
         .trigger-title {{
-            font-family: var(--font-ui);
-            font-size: 0.82rem;
-            font-weight: 700;
+            font-family: var(--font-ui) !important;
+            font-size: 0.82rem !important;
+            font-weight: 700 !important;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            color: var(--accent-sage);
+            color: var(--accent-sage) !important;
             margin-bottom: 0.35rem;
-        }}
-        .trigger-text {{
-            font-family: var(--font-serif);
-            font-size: var(--body-size);
-            line-height: 1.65;
-            color: var(--text-primary);
         }}
 
         .quote-callout, .legal-blockquote {{
@@ -723,33 +811,31 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             padding: 0.95rem 1.25rem;
             border-radius: 0 8px 8px 0;
             margin: 0.95rem 0;
-            font-family: var(--font-serif);
             font-style: italic;
         }}
         .quote-callout-label {{
-            font-family: var(--font-ui);
-            font-style: normal;
-            font-size: 0.78rem;
-            font-weight: 700;
+            font-family: var(--font-ui) !important;
+            font-style: normal !important;
+            font-size: 0.78rem !important;
+            font-weight: 700 !important;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            color: var(--accent-navy);
+            color: var(--accent-navy) !important;
             margin-bottom: 0.35rem;
         }}
 
         .recit-callout {{
             background-color: var(--callout-blue-bg);
             border-left: 4px solid var(--accent-primary);
-            padding: 0.9rem 1.15rem;
+            padding: 0.95rem 1.2rem;
             border-radius: 0 8px 8px 0;
             margin: 0.85rem 0 1.25rem 0;
-            font-family: var(--font-serif);
         }}
         .recit-label {{
-            font-family: var(--font-ui);
-            font-size: 0.84rem;
-            font-weight: 700;
-            color: var(--accent-navy);
+            font-family: var(--font-ui) !important;
+            font-size: 0.86rem !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
         }}
 
         .issue-verdict-banner {{
@@ -761,9 +847,9 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin: 1rem 0 0.75rem 0;
         }}
         .verdict-tag {{
-            font-family: var(--font-ui);
-            font-weight: 700;
-            color: var(--accent-navy);
+            font-family: var(--font-ui) !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
         }}
 
         .fallo-box {{
@@ -775,12 +861,12 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin: 1.1rem 0;
         }}
         .fallo-title {{
-            font-family: var(--font-ui);
-            font-size: 0.82rem;
-            font-weight: 700;
+            font-family: var(--font-ui) !important;
+            font-size: 0.82rem !important;
+            font-weight: 700 !important;
             text-transform: uppercase;
             letter-spacing: 0.04em;
-            color: var(--accent-navy);
+            color: var(--accent-navy) !important;
             margin-bottom: 0.4rem;
         }}
 
@@ -794,15 +880,10 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             align-items: baseline;
         }}
         .timeline-date {{
-            font-family: var(--font-ui);
-            font-size: 0.86rem;
-            font-weight: 700;
-            color: var(--accent-navy);
-        }}
-        .timeline-event {{
-            font-family: var(--font-serif);
-            font-size: var(--body-size);
-            line-height: 1.65;
+            font-family: var(--font-ui) !important;
+            font-size: 0.88rem !important;
+            font-weight: 700 !important;
+            color: var(--accent-navy) !important;
         }}
 
         /* Section 5 Numbered Issues */
@@ -813,10 +894,10 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin-bottom: 0.85rem;
         }}
         .num-circle {{
-            font-family: var(--font-mono);
-            font-size: 0.82rem;
-            font-weight: 600;
-            color: var(--accent-navy);
+            font-family: var(--font-mono) !important;
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+            color: var(--accent-navy) !important;
             background-color: var(--callout-blue-bg);
             padding: 0.15rem 0.5rem;
             border-radius: 5px;
@@ -824,32 +905,25 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin-top: 0.15rem;
         }}
         .issue-pill {{
-            font-family: var(--font-ui);
-            font-size: 0.7rem;
-            font-weight: 700;
+            font-family: var(--font-ui) !important;
+            font-size: 0.7rem !important;
+            font-weight: 700 !important;
             padding: 0.15rem 0.5rem;
             border-radius: 4px;
             margin-right: 0.4rem;
             vertical-align: middle;
         }}
-        .issue-primary {{
-            background-color: var(--accent-gold);
-            color: #FFFFFF;
-        }}
-        .issue-secondary {{
-            background-color: var(--callout-blue-bg);
-            color: var(--accent-navy);
-        }}
+        .issue-primary {{ background-color: var(--accent-gold); color: #FFFFFF !important; }}
+        .issue-secondary {{ background-color: var(--callout-blue-bg); color: var(--accent-navy) !important; }}
 
-        /* Right Sidebar: Study Navigator & Quick Aids */
+        /* Right Sidebar: Study Navigator Card */
         .navigator-card {{
             background-color: var(--bg-surface);
             border: 1px solid var(--border-subtle);
             border-radius: 10px;
-            padding: 1.2rem 1.25rem;
-            position: sticky;
-            top: 1rem;
+            padding: 1rem 1.1rem;
             box-shadow: var(--shadow-card);
+            margin-bottom: 0.75rem;
         }}
         .navigator-title {{
             font-family: var(--font-ui);
@@ -858,37 +932,12 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             text-transform: uppercase;
             letter-spacing: 0.05em;
             color: var(--accent-navy);
-            margin-bottom: 0.75rem;
-            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+            padding-bottom: 0.45rem;
             border-bottom: 2px solid var(--border-subtle);
         }}
-        .toc-link {{
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            padding: 0.42rem 0.5rem;
-            border-radius: 6px;
-            text-decoration: none !important;
-            color: var(--text-secondary) !important;
-            font-family: var(--font-ui);
-            font-size: 0.82rem;
-            line-height: 1.35;
-            transition: background-color 0.15s, color 0.15s;
-        }}
-        .toc-link:hover {{
-            background-color: var(--callout-blue-bg);
-            color: var(--accent-navy) !important;
-            font-weight: 600;
-        }}
-        .toc-num {{
-            font-family: var(--font-mono);
-            font-size: 0.72rem;
-            font-weight: 600;
-            color: var(--accent-sage);
-            min-width: 24px;
-        }}
 
-        /* Search Highlight */
+        /* Search Highlight & Search Result Cards */
         mark.search-mark {{
             background-color: var(--mark-bg);
             color: var(--mark-text);
@@ -896,8 +945,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 3px;
             font-weight: 600;
         }}
-
-        /* Search Result Card */
         .search-card {{
             background-color: var(--bg-surface);
             border: 1px solid var(--border-subtle);
@@ -917,42 +964,19 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
 
         /* Mobile & Tablet Responsive Breakpoints */
         @media (max-width: 992px) {{
-            .reader-sheet {{
-                padding: 1.75rem 1.5rem;
-                max-width: 100%;
-            }}
-            .navigator-card {{
-                position: static;
-                margin-top: 1rem;
-            }}
+            .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
         }}
         @media (max-width: 640px) {{
-            .block-container {{
-                padding-left: 0.75rem !important;
-                padding-right: 0.75rem !important;
-            }}
-            .library-masthead {{
-                padding: 0.9rem 1.1rem;
-            }}
-            .masthead-title {{
-                font-size: 1.18rem;
-            }}
-            .reader-sheet {{
-                padding: 1.25rem 1.05rem;
-                border-radius: 8px;
-            }}
-            .case-main-title {{
-                font-size: 1.45rem;
-            }}
-            .timeline-row {{
-                grid-template-columns: 1fr;
-                gap: 0.2rem;
-            }}
+            .block-container {{ padding-left: 0.75rem !important; padding-right: 0.75rem !important; }}
+            .library-masthead {{ padding: 0.9rem 1.1rem; }}
+            .masthead-title {{ font-size: 1.18rem; }}
+            .reader-sheet {{ padding: 1.25rem 1.05rem; border-radius: 8px; }}
+            .reader-sheet h1.case-main-title {{ font-size: 1.45rem !important; }}
+            .timeline-row {{ grid-template-columns: 1fr; gap: 0.2rem; }}
         }}
 
         {focus_css}
-        </style>
-        """,
+        </style>""",
         unsafe_allow_html=True,
     )
 
@@ -960,11 +984,9 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
 # --- 6. LOAD LIBRARY DATA ---
 cases, bm25, tokenized_corpus = load_library()
 
-# Ensure default selected case if available
 if cases and not st.session_state.selected_lookup_key:
     st.session_state.selected_lookup_key = cases[0]["_uid"]
 
-# Inject active CSS
 inject_custom_css(
     st.session_state.theme_mode,
     st.session_state.focus_mode,
@@ -980,7 +1002,6 @@ with st.sidebar:
     if not cases:
         st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator to populate your library.")
     else:
-        # Extract actual categories from JSONL records
         actual_categories = sorted(list({c.get("category", "Uncategorized") or "Uncategorized" for c in cases}))
         cat_counts = {
             cat: sum(1 for c in cases if (c.get("category") or "Uncategorized") == cat)
@@ -1004,16 +1025,14 @@ with st.sidebar:
         )
         st.session_state.selected_category = chosen_cat
 
-        # Filter cases inside selected category
         if chosen_cat == "-- All Categories --":
             filtered_cases = cases
         else:
             filtered_cases = [c for c in cases if (c.get("category") or "Uncategorized") == chosen_cat]
 
-        # Quick filter inside the filing cabinet
         cabinet_filter = st.text_input(
             "Filter list by title or G.R. No.",
-            placeholder="e.g., Chi Ming Tsoi or 119190",
+            placeholder="e.g., Guevara or 25577",
             label_visibility="collapsed",
         )
         if cabinet_filter.strip():
@@ -1043,16 +1062,18 @@ with st.sidebar:
             if chosen_uid != st.session_state.selected_lookup_key:
                 st.session_state.selected_lookup_key = chosen_uid
                 st.session_state.active_search_query = ""
+                st.session_state.scroll_to_anchor = ""
                 st.rerun()
         else:
             st.info("No cases match that filter.")
 
         st.divider()
-        st.markdown("##### ⚙️ Reader Preferences")
-        font_choice = st.select_slider(
+        st.markdown("##### ⚙️ Reader Typography")
+        font_choice = st.radio(
             "Typography Size",
             options=["Compact", "Standard", "Comfortable"],
-            value=st.session_state.font_scale,
+            index=["Compact", "Standard", "Comfortable"].index(st.session_state.font_scale),
+            horizontal=True,
         )
         if font_choice != st.session_state.font_scale:
             st.session_state.font_scale = font_choice
@@ -1061,27 +1082,25 @@ with st.sidebar:
 
 # --- 8. TOP INSTITUTIONAL MASTHEAD & CONTROLS ---
 unique_cats_count = len({c.get("category", "Uncategorized") for c in cases})
-st.markdown(
-    f"""
-    <div class="library-masthead">
-        <div class="masthead-brand">
-            <span class="masthead-icon">⚖️</span>
-            <div>
-                <div class="masthead-title">Philippine Jurisprudence Library</div>
-                <div class="masthead-subtitle">Full-Text Substitute Case Digests • Doctrinal Matrix • Lexical Research Engine</div>
-            </div>
-        </div>
-        <div class="masthead-stats">
-            <span class="stat-pill">📚 {len(cases)} Indexed Cases</span>
-            <span class="stat-pill">🗂️ {unique_cats_count} Syllabus Topics</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
+masthead_html = (
+    "<div class='library-masthead'>"
+    "<div class='masthead-brand'>"
+    "<span class='masthead-icon'>⚖️</span>"
+    "<div>"
+    "<div class='masthead-title'>Philippine Jurisprudence Library</div>"
+    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • Doctrinal Matrix • Lexical Research Engine</div>"
+    "</div>"
+    "</div>"
+    "<div class='masthead-stats'>"
+    f"<span class='stat-pill'>📚 {len(cases)} Indexed Cases</span>"
+    f"<span class='stat-pill'>🗂️ {unique_cats_count} Syllabus Topics</span>"
+    "</div>"
+    "</div>"
 )
+st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Top Control Strip: Search Bar | Study Persona Switcher | Focus Mode | Light/Dark Mode
-ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns([3.2, 2.2, 1.0, 1.0], gap="small")
+# Top Control Strip: Search Bar | Study Persona Switcher | Typography Size | Focus Mode | Light/Dark Mode
+ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([3.0, 2.0, 1.3, 1.0, 1.0], gap="small")
 
 with ctrl_col1:
     search_input = st.text_input(
@@ -1111,14 +1130,27 @@ with ctrl_col2:
         st.rerun()
 
 with ctrl_col3:
-    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus Mode"
-    if st.button(focus_btn_label, use_container_width=True, help="Hide sidebars and center the legal document for distraction-free reading"):
-        st.session_state.focus_mode = not st.session_state.focus_mode
+    size_options = ["Compact", "Standard", "Comfortable"]
+    top_font_choice = st.selectbox(
+        "Text Size",
+        options=size_options,
+        index=size_options.index(st.session_state.font_scale),
+        format_func=lambda s: f"🔤 Text: {s}",
+        label_visibility="collapsed",
+    )
+    if top_font_choice != st.session_state.font_scale:
+        st.session_state.font_scale = top_font_choice
         st.rerun()
 
 with ctrl_col4:
+    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus Mode"
+    if st.button(focus_btn_label, use_container_width=True, help="Hide sidebars and center the legal document"):
+        st.session_state.focus_mode = not st.session_state.focus_mode
+        st.rerun()
+
+with ctrl_col5:
     theme_btn_label = "☀️ Light Mode" if st.session_state.theme_mode == "Dark" else "🌙 Dark Mode"
-    if st.button(theme_btn_label, use_container_width=True, help="Toggle between Warm Paper Light Mode and Low-Glare Slate Dark Mode"):
+    if st.button(theme_btn_label, use_container_width=True, help="Toggle between Light Mode and Dark Mode"):
         st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
         st.rerun()
 
@@ -1129,7 +1161,6 @@ query_tokens = [t for t in re.split(r"\W+", query_str.lower()) if t]
 
 if query_str and bm25 and cases:
     scores = bm25.get_scores(query_tokens)
-    # Also boost exact substring matches in citation or digest
     ranked_pairs = []
     for idx, base_score in enumerate(scores):
         c_item = cases[idx]
@@ -1158,22 +1189,19 @@ if query_str and bm25 and cases:
             parsed_m = parse_digest_structure(match_case.get("digest", ""))
             quote_preview = parsed_m["quotes"][0] if parsed_m["quotes"] else ""
 
-            st.markdown(
-                f"""
-                <div class="search-card">
-                    <div class="breadcrumb-bar">
-                        <span class="cat-badge">{html.escape(match_case.get('category', 'General'))}</span>
-                        <span class="gr-badge">{html.escape(match_case.get('lookup_key', ''))}</span>
-                        <span class="gr-badge">BM25 Score: {score_val:.2f}</span>
-                    </div>
-                    <div style="font-family: var(--font-serif); font-size: 1.25rem; font-weight: 700; color: var(--accent-navy);">
-                        {format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}
-                    </div>
-                    <div class="search-snippet">{snippet_html}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            card_html = (
+                "<div class='search-card'>"
+                "<div class='breadcrumb-bar'>"
+                f"<span class='cat-badge'>{html.escape(match_case.get('category', 'General'))}</span>"
+                f"<span class='gr-badge'>{html.escape(match_case.get('lookup_key', ''))}</span>"
+                f"<span class='gr-badge'>BM25 Score: {score_val:.2f}</span>"
+                "</div>"
+                f"<div style='font-family: var(--font-serif); font-size: 1.25rem; font-weight: 700; color: var(--accent-navy);'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
+                f"<div class='search-snippet'>{snippet_html}</div>"
+                "</div>"
             )
+            st.markdown(card_html, unsafe_allow_html=True)
+
             btn_c1, btn_c2, _ = st.columns([1.4, 2.0, 4.6])
             with btn_c1:
                 if st.button("📖 Open Case Digest", key=f"open_search_{idx}", use_container_width=True):
@@ -1207,7 +1235,7 @@ meta = parsed["metadata"]
 quotes = parsed["quotes"]
 issues_list = parsed["issues"]
 
-# Mobile / Compact Case Switcher & Section Jumper (Highly accessible on phones/tablets)
+# Mobile / Compact Case Switcher & Section Jumper
 with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)", expanded=False):
     m_col1, m_col2 = st.columns(2)
     with m_col1:
@@ -1221,16 +1249,17 @@ with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)"
         )
         if mob_uid != active_case["_uid"]:
             st.session_state.selected_lookup_key = mob_uid
+            st.session_state.scroll_to_anchor = ""
             st.rerun()
     with m_col2:
         if sections:
-            toc_links_inline = " • ".join(
-                f"<a href='#{s['anchor']}' style='color: var(--accent-navy); font-weight:600; text-decoration:none;'>[{html.escape(s['num'])}] {html.escape(s['short_title'][:22])}</a>"
-                for s in sections
-            )
-            st.markdown(f"<div style='padding-top:1.6rem; font-size:0.84rem;'>{toc_links_inline}</div>", unsafe_allow_html=True)
+            sec_opts = ["-- Jump to Section --"] + [f"{s['num']}. {s['short_title']}" for s in sections]
+            chosen_mob_sec = st.selectbox("Jump to Section", options=sec_opts)
+            if chosen_mob_sec != "-- Jump to Section --":
+                idx_s = sec_opts.index(chosen_mob_sec) - 1
+                st.session_state.scroll_to_anchor = sections[idx_s]["anchor"]
 
-# Layout allocation: Focus Mode (single centered column) vs Desktop 2-column (Reader + Study Navigator)
+# Layout allocation: Focus Mode vs Desktop 2-column (Reader + Study Navigator)
 if st.session_state.focus_mode:
     reader_container = st.container()
     nav_container = None
@@ -1238,7 +1267,40 @@ else:
     reader_container, nav_container = st.columns([3.3, 1.15], gap="large")
 
 
-# --- 10A. CENTRAL READING PANE ---
+# --- 10B. RIGHT SIDEBAR: STUDY NAVIGATOR (Processed first so button clicks update scroll_to_anchor immediately) ---
+if nav_container is not None:
+    with nav_container:
+        st.markdown(
+            "<div class='navigator-card'><div class='navigator-title'>🧭 On This Case (Click to Jump)</div></div>",
+            unsafe_allow_html=True,
+        )
+        for sec in sections:
+            btn_lbl = f"{sec['num']}. {sec['short_title'][:32] + ('...' if len(sec['short_title']) > 32 else '')}"
+            if st.button(btn_lbl, key=f"nav_btn_{sec['anchor']}", use_container_width=True):
+                st.session_state.scroll_to_anchor = sec["anchor"]
+
+        st.markdown("<div style='height: 0.75rem;'></div>", unsafe_allow_html=True)
+
+        with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
+            st.caption("Test your recall before looking at the holding:")
+            if issues_list:
+                st.markdown(f"**Primary Question:**\n{issues_list[0]}")
+            else:
+                st.markdown(f"**Case:** {active_case.get('citation', '')}")
+            if st.checkbox("Reveal Cold-Call Answer & Outcome", key="reveal_recit"):
+                ans = meta.get("cold_call") or meta.get("outcome") or "Refer to Section 6 and Section 6.5 in the digest."
+                st.success(ans)
+
+        with st.expander("📋 Copy Citation & Verbatim Quotes", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
+            cite_block = f"{active_case.get('citation', '')}"
+            if meta.get("citation_metadata"):
+                cite_block += f" ({meta['citation_metadata']})"
+            if quotes:
+                cite_block += "\n\n" + "\n\n".join(quotes[:2])
+            st.code(cite_block, language="markdown")
+
+
+# --- 10A. CENTRAL READING PANE (Single-line HTML assembly so Markdown NEVER treats blocks as <pre><code>) ---
 with reader_container:
     cat_label = active_case.get("category", "General Jurisprudence") or "General Jurisprudence"
     gr_label = active_case.get("lookup_key", "")
@@ -1250,7 +1312,7 @@ with reader_container:
         else "<span>📄 Offline Local Digest</span>"
     )
 
-    # Render Mode-Specific Top Aide Banner inside the Reader
+    # Render Mode-Specific Top Aide Banner (Zero leading indentation!)
     mode_banner_html = ""
     if st.session_state.study_mode == "⚡ Exam & Recit Review":
         trigger_txt = meta.get("factual_trigger", "See Section 2 & Section 3 below for factual trigger.")
@@ -1258,116 +1320,76 @@ with reader_container:
         magic_txt = meta.get("magic_words", "")
         outcome_txt = meta.get("outcome") or meta.get("fallo", "")
 
-        mode_banner_html = f"""
-        <div class="recit-callout" style="margin-bottom: 1.75rem;">
-            <div style="font-family: var(--font-ui); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-navy); margin-bottom: 0.5rem;">
-                ⚡ Rapid Recitation & Exam Review Deck
-            </div>
-            <p class="digest-p"><strong class="inline-lead">Factual Trigger:</strong> {format_inline_markdown(trigger_txt)}</p>
-            <p class="digest-p"><strong class="inline-lead">30-Second Cold-Call Synthesis:</strong> {format_inline_markdown(cold_call_txt)}</p>
-            {f'<p class="digest-p"><strong class="inline-lead">Terms of Art ("Magic Words"):</strong> {format_inline_markdown(magic_txt)}</p>' if magic_txt else ''}
-            {f'<p class="digest-p" style="margin-bottom:0;"><strong class="inline-lead">Disposition:</strong> {format_inline_markdown(outcome_txt)}</p>' if outcome_txt else ''}
-        </div>
-        """
+        magic_html = f"<p class='digest-p'><strong class='inline-lead'>Terms of Art (Magic Words):</strong> {format_inline_markdown(magic_txt)}</p>" if magic_txt else ""
+        disp_html = f"<p class='digest-p' style='margin-bottom:0;'><strong class='inline-lead'>Disposition:</strong> {format_inline_markdown(outcome_txt)}</p>" if outcome_txt else ""
+
+        mode_banner_html = (
+            "<div class='recit-callout' style='margin-bottom: 1.75rem;'>"
+            "<div style='font-family: var(--font-ui); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-navy); margin-bottom: 0.5rem;'>⚡ Rapid Recitation &amp; Exam Review Deck</div>"
+            f"<p class='digest-p'><strong class='inline-lead'>Factual Trigger:</strong> {format_inline_markdown(trigger_txt)}</p>"
+            f"<p class='digest-p'><strong class='inline-lead'>30-Second Cold-Call Synthesis:</strong> {format_inline_markdown(cold_call_txt)}</p>"
+            f"{magic_html}"
+            f"{disp_html}"
+            "</div>"
+        )
 
     elif st.session_state.study_mode == "🔎 Legal Research":
         posture_txt = meta.get("procedural_posture", "See Section 1.")
         topic_txt = meta.get("primary_topic", cat_label)
         quotes_html = "".join(
-            f"<div class='quote-callout'><div class='quote-callout-label'>📜 Verbatim Doctrinal Holding #{i+1}</div><div>{format_inline_markdown(q)}</div></div>"
+            f"<div class='quote-callout'><div class='quote-callout-label'>📜 Verbatim Doctrinal Holding #{i+1}</div><div class='quote-callout-body'>{format_inline_markdown(q)}</div></div>"
             for i, q in enumerate(quotes[:3])
         )
-        mode_banner_html = f"""
-        <div class="fallo-box" style="margin-bottom: 1.75rem;">
-            <div class="fallo-title">🔎 Legal Practitioner & Argument Research Brief</div>
-            <p class="digest-p"><strong class="inline-lead">Primary Doctrinal Classification:</strong> {format_inline_markdown(topic_txt)}</p>
-            <p class="digest-p"><strong class="inline-lead">Procedural Vehicle:</strong> {format_inline_markdown(posture_txt)}</p>
-            {quotes_html}
-        </div>
-        """
+        mode_banner_html = (
+            "<div class='fallo-box' style='margin-bottom: 1.75rem;'>"
+            "<div class='fallo-title'>🔎 Legal Practitioner &amp; Argument Research Brief</div>"
+            f"<p class='digest-p'><strong class='inline-lead'>Primary Doctrinal Classification:</strong> {format_inline_markdown(topic_txt)}</p>"
+            f"<p class='digest-p'><strong class='inline-lead'>Procedural Vehicle:</strong> {format_inline_markdown(posture_txt)}</p>"
+            f"{quotes_html}"
+            "</div>"
+        )
 
-    # Build the continuous scrollable legal document HTML
+    # Build the continuous scrollable legal document HTML with zero 4-space indentation
     sections_html_list: List[str] = []
     for sec in sections:
         sec_body_html = render_section_lines_to_html(sec["lines"], sec["num"])
         sections_html_list.append(
-            f"""
-            <div class="digest-section-block" id="{sec['anchor']}">
-                <div class="digest-section-header">
-                    <span class="sec-num-badge">{html.escape(sec['num'])}</span>
-                    <h3 class="sec-heading-text">{html.escape(sec['short_title'])}</h3>
-                </div>
-                <div class="legal-prose">
-                    {sec_body_html}
-                </div>
-            </div>
-            """
+            f"<div class='digest-section-block' id='{sec['anchor']}'>"
+            f"<div class='digest-section-header'><span class='sec-num-badge'>{html.escape(sec['num'])}</span><h3 class='sec-heading-text'>{html.escape(sec['short_title'])}</h3></div>"
+            f"<div class='legal-prose'>{sec_body_html}</div>"
+            "</div>"
         )
 
-    full_sections_html = "\n".join(sections_html_list)
+    full_sections_html = "".join(sections_html_list)
+    gr_pill_html = f"<span class='gr-badge'>{html.escape(gr_label)}</span>" if gr_label else ""
 
-    st.markdown(
-        f"""
-        <div class="reader-sheet">
-            <div class="breadcrumb-bar">
-                <span class="cat-badge">📁 {html.escape(cat_label)}</span>
-                {f'<span class="gr-badge">{html.escape(gr_label)}</span>' if gr_label else ''}
-            </div>
-            <h1 class="case-main-title">{html.escape(active_case.get('citation', 'Untitled Case'))}</h1>
-            <div class="case-meta-row">
-                <span>🗓️ Cataloged: <strong>{html.escape(date_cat)}</strong></span>
-                <span>•</span>
-                {source_link_html}
-            </div>
-            {mode_banner_html}
-            {full_sections_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
+    reader_html = (
+        "<div class='reader-sheet'>"
+        f"<div class='breadcrumb-bar'><span class='cat-badge'>📁 {html.escape(cat_label)}</span>{gr_pill_html}</div>"
+        f"<h1 class='case-main-title'>{html.escape(active_case.get('citation', 'Untitled Case'))}</h1>"
+        f"<div class='case-meta-row'><span>🗓️ Cataloged: <strong>{html.escape(date_cat)}</strong></span><span>•</span>{source_link_html}</div>"
+        f"{mode_banner_html}"
+        f"{full_sections_html}"
+        "</div>"
     )
+    st.markdown(reader_html, unsafe_allow_html=True)
 
-
-# --- 10B. RIGHT SIDEBAR: STUDY NAVIGATOR & CITATION TOOLS ---
-if nav_container is not None:
-    with nav_container:
-        toc_items_html = "\n".join(
-            f"""
-            <a class="toc-link" href="#{sec['anchor']}">
-                <span class="toc-num">{html.escape(sec['num'])}</span>
-                <span>{html.escape(sec['short_title'][:38] + ('...' if len(sec['short_title']) > 38 else ''))}</span>
-            </a>
-            """
-            for sec in sections
-        )
-
-        st.markdown(
-            f"""
-            <div class="navigator-card">
-                <div class="navigator-title">🧭 On This Case</div>
-                {toc_items_html if toc_items_html else '<div style="font-size:0.82rem; color:var(--text-muted);">No headings detected.</div>'}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
-
-        # Interactive Self-Test / Flashcard Accordion for Reviewers
-        with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
-            st.caption("Test your recall before looking at the holding:")
-            if issues_list:
-                st.markdown(f"**Primary Question:**\n{issues_list[0]}")
-            else:
-                st.markdown(f"**Case:** {active_case.get('citation', '')}")
-            if st.checkbox("Reveal Cold-Call Answer & Outcome", key="reveal_recit"):
-                ans = meta.get("cold_call") or meta.get("outcome") or "Refer to Section 6 and Section 6.5 in the digest."
-                st.success(ans)
-
-        # Practitioner Citation & Copy Box
-        with st.expander("📋 Copy Citation & Verbatim Quotes", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
-            cite_block = f"{active_case.get('citation', '')}"
-            if meta.get("citation_metadata"):
-                cite_block += f" ({meta['citation_metadata']})"
-            if quotes:
-                cite_block += "\n\n" + "\n\n".join(quotes[:2])
-            st.code(cite_block, language="markdown")
+# Execute smooth JavaScript scroll into view in parent DOM when a section button is clicked
+if st.session_state.scroll_to_anchor:
+    target_id = st.session_state.scroll_to_anchor
+    st.components.v1.html(
+        f"""
+        <script>
+        (function() {{
+            const targetId = {json.dumps(target_id)};
+            const parentDoc = window.parent.document;
+            const el = parentDoc.getElementById(targetId);
+            if (el) {{
+                el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+            }}
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state.scroll_to_anchor = ""
