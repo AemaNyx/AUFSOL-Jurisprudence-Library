@@ -1114,34 +1114,14 @@ masthead_html = (
 )
 st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Top Control Strip: Sidebar Toggle | Search Bar | Study Persona | Text Size | Focus Mode | Light/Dark Mode
-ctrl_col0, ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([0.9, 2.7, 1.8, 1.2, 0.9, 0.9], gap="small")
-
-with ctrl_col0:
-    # JavaScript trigger that clicks Streamlit's native sidebar collapse arrow
-    sidebar_btn = st.button("📂 Sidebar", use_container_width=True, help="Toggle Filing Cabinet sidebar on/off")
-    if sidebar_btn:
-        components.html(
-            """
-            <script>
-            (function() {
-                const doc = window.parent.document;
-                // Find Streamlit's native sidebar collapse button in the header/sidebar
-                const collapseBtn = doc.querySelector('[data-testid="collapsedControl"]') || doc.querySelector('button[kind="header"]');
-                if (collapseBtn) {
-                    collapseBtn.click();
-                }
-            })();
-            </script>
-            """,
-            height=0,
-        )
+# Top Control Strip: Search Bar | Study Persona Switcher | Typography Size | Focus Mode | Light/Dark Mode
+ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([3.0, 2.0, 1.3, 1.0, 1.0], gap="small")
 
 with ctrl_col1:
     search_input = st.text_input(
         "Universal Lexical Search",
         value=st.session_state.active_search_query,
-        placeholder="🔍 Search citations, G.R. numbers, doctrines...",
+        placeholder="🔍 Search citations, G.R. numbers, doctrines, Latin maxims, or verbatim phrases...",
         label_visibility="collapsed",
     )
     if search_input != st.session_state.active_search_query:
@@ -1170,7 +1150,7 @@ with ctrl_col3:
         "Text Size",
         options=size_options,
         index=size_options.index(st.session_state.font_scale),
-        format_func=lambda s: f"🔤 {s}",
+        format_func=lambda s: f"🔤 Text: {s}",
         label_visibility="collapsed",
     )
     if top_font_choice != st.session_state.font_scale:
@@ -1178,16 +1158,17 @@ with ctrl_col3:
         st.rerun()
 
 with ctrl_col4:
-    focus_btn_label = "🧘 Exit" if st.session_state.focus_mode else "🧘 Focus"
+    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus Mode"
     if st.button(focus_btn_label, use_container_width=True, help="Hide sidebars and center the legal document"):
         st.session_state.focus_mode = not st.session_state.focus_mode
         st.rerun()
 
 with ctrl_col5:
-    theme_btn_label = "☀️" if st.session_state.theme_mode == "Dark" else "🌙"
-    if st.button(theme_btn_label, use_container_width=True, help="Toggle Light/Dark Mode"):
+    theme_btn_label = "☀️ Light Mode" if st.session_state.theme_mode == "Dark" else "🌙 Dark Mode"
+    if st.button(theme_btn_label, use_container_width=True, help="Toggle between Light Mode and Dark Mode"):
         st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
         st.rerun()
+
 
 # --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
 query_str = st.session_state.active_search_query.strip()
