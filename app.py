@@ -4,22 +4,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
+import streamlit.components.v1 as components
 from rank_bm25 import BM25Okapi
-
-
-import streamlit as st
-
-hide_complete_header = """
-    <style>
-    div[data-testid="stToolbar"] { visibility: hidden; height: 0%; position: fixed; }
-    div[data-testid="stDecoration"] { visibility: hidden; height: 0%; position: fixed; }
-    div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
-    header { visibility: hidden; height: 0%; }
-    </style>
-"""
-st.markdown(hide_complete_header, unsafe_allow_html=True)
-
-
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
@@ -29,29 +15,66 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+hide_complete_header = """
+<style>
+div[data-testid="stToolbar"] { visibility: hidden; height: 0%; position: fixed; }
+div[data-testid="stDecoration"] { visibility: hidden; height: 0%; position: fixed; }
+div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
+header { visibility: hidden; height: 0%; }
+</style>
+"""
+st.markdown(hide_complete_header, unsafe_allow_html=True)
+
 # --- 2. SESSION STATE INITIALIZATION ---
 if "theme_mode" not in st.session_state:
     st.session_state.theme_mode = "Light"
 if "focus_mode" not in st.session_state:
     st.session_state.focus_mode = False
+if "sidebar_hidden" not in st.session_state:
+    st.session_state.sidebar_hidden = False
 if "study_mode" not in st.session_state:
     st.session_state.study_mode = "📖 First-Time Read"
 if "font_scale" not in st.session_state:
     st.session_state.font_scale = "Standard"
 if "selected_lookup_key" not in st.session_state:
     st.session_state.selected_lookup_key = None
-if "selected_category" not in st.session_state:
-    st.session_state.selected_category = "-- All Categories --"
+if "selected_subject" not in st.session_state:
+    st.session_state.selected_subject = "-- All Subjects --"
+if "selected_topic" not in st.session_state:
+    st.session_state.selected_topic = "-- All Topics --"
 if "active_search_query" not in st.session_state:
     st.session_state.active_search_query = ""
 if "scroll_to_anchor" not in st.session_state:
     st.session_state.scroll_to_anchor = ""
 
 
+def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
+    """Resolves (Tier 1: Subject, Tier 2: Topic, Combined Category) for both new 2-tier and legacy 1-tier records."""
+    subj = (obj.get("subject") or obj.get("tier1_subject") or "").strip()
+    top = (obj.get("topic") or obj.get("tier2_topic") or "").strip()
+    raw_cat = (obj.get("category") or "").strip()
+
+    if not subj or not top:
+        for delim in ("|", "—", "->", "→", "::"):
+            if delim in raw_cat:
+                parts = [p.strip() for p in raw_cat.split(delim, 1) if p.strip()]
+                if len(parts) == 2:
+                    subj = subj or parts[0]
+                    top = top or parts[1]
+                    break
+        if not subj:
+            subj = "General Jurisprudence"
+        if not top:
+            top = raw_cat or "General Topic"
+
+    combined = f"{subj} | {top}" if subj.lower() != top.lower() else subj
+    return subj, top, combined
+
+
 # --- 3. DATA LOADING & BM25 LEXICAL INDEXING ---
 @st.cache_data(show_spinner=False)
 def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List[str]]]:
-    """Loads all records from case_library/master_library.jsonl and builds BM25 index."""
+    """Loads all records from case_library/master_library.jsonl and builds BM25 index with 2-Tier metadata."""
     candidates = [
         Path("case_library/master_library.jsonl"),
         Path("master_library.jsonl"),
@@ -69,14 +92,21 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
                     obj = json.loads(line)
                     if not obj.get("lookup_key"):
                         obj["lookup_key"] = f"CASE_{idx + 1}"
-                    obj["_uid"] = f"{obj.get('lookup_key', idx)}::{obj.get('category', '')}::{idx}"
+                    subj, top, combined_cat = resolve_two_tier_fields(obj)
+                    obj["subject"] = subj
+                    obj["topic"] = top
+                    obj["category"] = combined_cat
+                    obj["_uid"] = f"{obj.get('lookup_key', idx)}::{subj}::{top}::{idx}"
                     cases.append(obj)
                 except Exception:
                     continue
 
     tokenized_corpus: List[List[str]] = []
     for c in cases:
-        raw_blob = f"{c.get('citation', '')} {c.get('lookup_key', '')} {c.get('category', '')} {c.get('digest', '')}".lower()
+        raw_blob = (
+            f"{c.get('citation', '')} {c.get('lookup_key', '')} "
+            f"{c.get('subject', '')} {c.get('topic', '')} {c.get('digest', '')}"
+        ).lower()
         tokens = [t for t in re.split(r"\W+", raw_blob) if t]
         tokenized_corpus.append(tokens)
 
@@ -85,7 +115,6 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
 
 
 # --- 4. MARKDOWN DIGEST PARSER & STRICT SECTION CLASSIFIER ---
-# Only match canonical 7+1 Section Titles so numbered items inside sections are NEVER mistaken for major sections
 CANONICAL_SEC_KEYWORDS = {
     "1": ("case header", "cast of characters", "procedural posture"),
     "2": ("syllabus topic", "codal provision", "factual trigger"),
@@ -101,7 +130,6 @@ MAJOR_SEC_CANDIDATE_RE = re.compile(
     r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?)[.)]?\s+(.+?)(?:\*\*)?\s*$"
 )
 
-# Capture inline labels where ** wraps either the label alone OR wraps "Label:** Value"
 INLINE_LABEL_PATTERN = re.compile(
     r"^\s*(?:[-•*]\s*)?(?:\*\*)?("
     r"Concise Recognizable Title|Full Official Caption|Citation & Metadata|"
@@ -119,12 +147,10 @@ INLINE_LABEL_PATTERN = re.compile(
 
 
 def is_canonical_major_section(sec_num: str, sec_title: str, raw_line: str) -> bool:
-    """Strictly verifies that a numbered line is actually one of the 7+1 major sections."""
     t_lower = sec_title.lower()
     expected = CANONICAL_SEC_KEYWORDS.get(sec_num, ())
     if any(k in t_lower for k in expected):
         return True
-    # Also accept if explicitly marked with ### 1. ... and short
     if raw_line.strip().startswith("#") and len(sec_title) < 95:
         return True
     return False
@@ -136,25 +162,15 @@ def slugify(text: str) -> str:
 
 
 def clean_stray_asterisks(text: str) -> str:
-    """Strips stray leading/trailing ** and unmatched ** markers from extracted values."""
     s = text.strip()
-    # Remove leading or trailing **
     s = re.sub(r"^\*+\s*", "", s)
     s = re.sub(r"\s*\*+$", "", s)
-    # If there is an odd number of ** remaining, strip stray unmatched **
     if s.count("**") % 2 == 1:
         s = s.replace("**", "")
     return s.strip()
 
 
 def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
-    """
-    Parses a standardized 7+1 Full-Text Substitute digest into:
-    - sections: list of {num, title, short_title, anchor, lines}
-    - metadata: extracted key-value fields
-    - quotes: list of extracted verbatim quotes
-    - issues: list of extracted issues from Section 5
-    """
     lines = digest_text.splitlines()
     sections: List[Dict[str, Any]] = []
     metadata_map: Dict[str, str] = {}
@@ -200,7 +216,6 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
 
         current_sec["lines"].append(raw_line)
 
-        # Extract key inline metadata fields cleanly
         m_label = INLINE_LABEL_PATTERN.match(stripped)
         if m_label:
             k_raw = m_label.group(1).strip().lower()
@@ -230,12 +245,10 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
             elif "plain-language outcome" in k_raw and v_raw:
                 metadata_map["outcome"] = v_raw
 
-        # Collect issues in Section 5
         if current_sec["num"] == "5":
             if re.match(r"^\d+[.)]\s+", stripped) or "whether or not" in stripped.lower():
                 issues.append(clean_stray_asterisks(stripped))
 
-        # Collect Golden Verbatim Quotes
         if "golden verbatim quote" in stripped.lower() or stripped.startswith(">"):
             q_clean = re.sub(r"^>\s*", "", stripped)
             q_clean = re.sub(
@@ -257,24 +270,18 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
 
 
 def format_inline_markdown(text: str, highlight_terms: Optional[List[str]] = None) -> str:
-    """Safely converts Markdown bold/italic into styled HTML, strips stray **, and highlights search terms."""
     if not text:
         return ""
     cleaned = text.strip()
-    # Strip stray leading ": **" or "** " at the start of a fragment
     cleaned = re.sub(r"^:\s*\*\*\s*", "", cleaned)
     cleaned = re.sub(r"^\*\*\s+", "", cleaned)
     cleaned = re.sub(r"\s+\*\*$", "", cleaned)
 
     escaped = html.escape(cleaned)
-    # Paired **bold**
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
-    # Remove any leftover unmatched ** so raw asterisks never appear in the reader
     escaped = escaped.replace("**", "")
-    # Paired *italic*
     escaped = re.sub(r"(?<!\*)\*([^\*\n]+?)\*(?!\*)", r"<em>\1</em>", escaped)
 
-    # Badges like [PRIMARY SYLLABUS ISSUE] or [Procedural / Secondary Issue]
     escaped = re.sub(
         r"\[(PRIMARY SYLLABUS ISSUE)\]",
         r"<span class='issue-pill issue-primary'>PRIMARY SYLLABUS ISSUE</span>",
@@ -296,26 +303,22 @@ def format_inline_markdown(text: str, highlight_terms: Optional[List[str]] = Non
 
 
 def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms: Optional[List[str]] = None) -> str:
-    """Renders the lines of a digest section into single-line, zero-indentation HTML (preventing Markdown code-block bugs)."""
     html_parts: List[str] = []
     for raw in lines:
         s = raw.strip()
         if not s:
             continue
 
-        # Clean stray markdown h3/h4 inside section
         if s.startswith("###") or s.startswith("####"):
             sub_h = clean_stray_asterisks(s.lstrip("#").strip())
             html_parts.append(f"<h4 class='digest-subheading'>{format_inline_markdown(sub_h, highlight_terms)}</h4>")
             continue
 
-        # Sub-headings like A. Petitioner's Arguments / B. Respondent's Arguments
         if re.match(r"^(?:\*\*)?[A-Z]\.[\s]+(?:Petitioner|Respondent|Public|Private|OSG|Accused|Defense)", s):
             clean_sub = clean_stray_asterisks(s)
             html_parts.append(f"<div class='party-header'>{format_inline_markdown(clean_sub, highlight_terms)}</div>")
             continue
 
-        # Issue breakdown sub-parts: (a) Issue & Short Answer, (b) Step-by-Step Ratio, (c) Golden Verbatim Quote, (d) Plain-Language
         m_sub = re.match(
             r"^(?:\*\*)?(\([a-d]\)\s*[^:*]+)(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*)$",
             s,
@@ -343,13 +346,11 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
                 )
             continue
 
-        # Blockquotes
         if s.startswith(">"):
             q_body = clean_stray_asterisks(s.lstrip(">").strip())
             html_parts.append(f"<blockquote class='legal-blockquote'>{format_inline_markdown(q_body, highlight_terms)}</blockquote>")
             continue
 
-        # Section 3 Chronological Timeline Entries: **[Date / Phase]:** Event OR **Date:** Event
         if sec_num == "3" and s.startswith("**"):
             m_time = re.match(r"^\*\*([^*:]+?)(?::)?\*\*\s*:?\s*(.*)$", s)
             if m_time:
@@ -360,7 +361,6 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
                 )
                 continue
 
-        # Standard Inline Labels (Concise Recognizable Title:, Citation & Metadata:, etc.)
         m_inline = INLINE_LABEL_PATTERN.match(s)
         if m_inline:
             lbl = clean_stray_asterisks(m_inline.group(1))
@@ -379,7 +379,6 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
                 )
             continue
 
-        # Generic "**Label:** Value" or "**Label**: Value" fallback
         m_generic_bold_label = re.match(r"^\*\*([^\*:\n]{2,65}?)(?::)?\*\*\s*:?\s+(.+)$", s)
         if m_generic_bold_label:
             g_lbl = clean_stray_asterisks(m_generic_bold_label.group(1).rstrip(":"))
@@ -389,7 +388,6 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
             )
             continue
 
-        # Numbered items (e.g. Issues list 1., 2., 3. or arguments)
         m_num = re.match(r"^(?:\*\*)?(\d{1,2}[.)])(?:\*\*)?\s+(.+)$", s)
         if m_num:
             num_badge = m_num.group(1)
@@ -399,14 +397,12 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
             )
             continue
 
-        # Default paragraph
         html_parts.append(f"<p class='digest-p'>{format_inline_markdown(s, highlight_terms)}</p>")
 
     return "".join(html_parts)
 
 
 def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) -> str:
-    """Extracts a contextual snippet around the first matched token with <mark> highlights."""
     if not text:
         return ""
     lower_text = text.lower()
@@ -427,7 +423,7 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
 
 
 # --- 5. THEME, WIDGET CONTRAST & RESPONSIVE CSS INJECTION ---
-def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
+def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_scale: str):
     is_dark = theme == "Dark"
 
     scale_map = {
@@ -494,10 +490,13 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
 
     css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
 
-    focus_css = ""
-    if focus_mode:
-        focus_css = """
+    sidebar_visibility_css = ""
+    if focus_mode or sidebar_hidden:
+        sidebar_visibility_css = """
         section[data-testid="stSidebar"] { display: none !important; }
+        """
+    if focus_mode:
+        sidebar_visibility_css += """
         .reader-sheet { max-width: 820px !important; margin: 0 auto !important; }
         """
 
@@ -517,25 +516,18 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             --h3-size: {h3_px};
         }}
 
-        /* App Surface & Base Typography */
         .stApp {{
             background-color: var(--bg-app) !important;
             color: var(--text-primary) !important;
             font-family: var(--font-ui) !important;
         }}
 
-        header[data-testid="stHeader"] {{
-            background-color: var(--bg-app) !important;
-            border-bottom: 1px solid var(--border-subtle);
-        }}
-
         .block-container {{
-            padding-top: 1.4rem !important;
+            padding-top: 1.2rem !important;
             padding-bottom: 4rem !important;
             max-width: 1440px !important;
         }}
 
-        /* Sidebar Styling & High-Contrast Controls */
         section[data-testid="stSidebar"] {{
             background-color: var(--bg-sidebar) !important;
             border-right: 1px solid var(--border-subtle) !important;
@@ -551,8 +543,8 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: var(--text-primary) !important;
         }}
 
-        /* Streamlit Native Buttons, Inputs, Selectboxes, Expanders (Light & Dark Mode Contrast) */
-        .stButton > button {{
+        .stButton > button,
+        .stPopover > div > button {{
             background-color: var(--btn-bg) !important;
             color: var(--btn-text) !important;
             border: 1px solid var(--btn-border) !important;
@@ -562,7 +554,8 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             font-size: 0.84rem !important;
             transition: all 0.15s ease !important;
         }}
-        .stButton > button:hover {{
+        .stButton > button:hover,
+        .stPopover > div > button:hover {{
             background-color: var(--btn-hover-bg) !important;
             border-color: var(--accent-navy) !important;
             color: var(--accent-navy) !important;
@@ -571,7 +564,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: inherit !important;
         }}
 
-        /* Text Inputs & Selectboxes in Both Modes */
         div[data-baseweb="input"] > div,
         div[data-baseweb="select"] > div {{
             background-color: var(--bg-input) !important;
@@ -605,7 +597,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             background-color: var(--btn-hover-bg) !important;
         }}
 
-        /* Expanders */
         details[data-testid="stExpander"] {{
             background-color: var(--bg-surface) !important;
             border: 1px solid var(--border-subtle) !important;
@@ -618,7 +609,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: var(--text-primary) !important;
         }}
 
-        /* Top Institutional Masthead Banner */
         .library-masthead {{
             background-color: var(--bg-header);
             color: #FFFFFF;
@@ -659,7 +649,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 6px;
         }}
 
-        /* Central Legal Reader Sheet */
         .reader-sheet {{
             background-color: var(--bg-surface);
             border: 1px solid var(--border-subtle);
@@ -671,13 +660,21 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: var(--text-primary);
         }}
 
-        /* Breadcrumb & Metadata Badges */
         .breadcrumb-bar {{
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             gap: 0.5rem;
             margin-bottom: 0.9rem;
+        }}
+        .subj-badge {{
+            background-color: var(--bg-header);
+            color: #FFFFFF !important;
+            font-family: var(--font-ui);
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.7rem;
+            border-radius: 6px;
         }}
         .cat-badge {{
             background-color: var(--callout-blue-bg);
@@ -699,7 +696,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 6px;
         }}
 
-        /* Case Title & Metadata Header (Using !important so Typography Slider overrides Streamlit h1/h3 defaults) */
         .reader-sheet h1.case-main-title {{
             font-family: var(--font-serif) !important;
             font-size: {title_px} !important;
@@ -728,7 +724,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
         }}
         .source-link:hover {{ text-decoration: underline; }}
 
-        /* Digest Section Cards & Headings */
         .digest-section-block {{
             margin-top: 2.1rem;
             padding-top: 0.25rem;
@@ -761,7 +756,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             line-height: 1.3 !important;
         }}
 
-        /* Legal Body Text (Explicitly bound to {body_px} with !important so Typography Size slider works) */
         .reader-sheet .legal-prose,
         .reader-sheet .digest-p,
         .reader-sheet .timeline-event,
@@ -802,7 +796,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-radius: 0 6px 6px 0;
         }}
 
-        /* Specialized Callouts */
         .trigger-box {{
             background-color: var(--callout-green-bg);
             border-left: 4px solid var(--accent-sage);
@@ -885,7 +878,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin-bottom: 0.4rem;
         }}
 
-        /* Section 3 Timeline Rows */
         .timeline-row {{
             display: grid;
             grid-template-columns: 165px 1fr;
@@ -901,7 +893,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             color: var(--accent-navy) !important;
         }}
 
-        /* Section 5 Numbered Issues */
         .numbered-item {{
             display: flex;
             gap: 0.75rem;
@@ -931,7 +922,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
         .issue-primary {{ background-color: var(--accent-gold); color: #FFFFFF !important; }}
         .issue-secondary {{ background-color: var(--callout-blue-bg); color: var(--accent-navy) !important; }}
 
-        /* Right Sidebar: Study Navigator Card */
         .navigator-card {{
             background-color: var(--bg-surface);
             border: 1px solid var(--border-subtle);
@@ -952,7 +942,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             border-bottom: 2px solid var(--border-subtle);
         }}
 
-        /* Search Highlight & Search Result Cards */
         mark.search-mark {{
             background-color: var(--mark-bg);
             color: var(--mark-text);
@@ -977,7 +966,6 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             margin-top: 0.5rem;
         }}
 
-        /* Mobile & Tablet Responsive Breakpoints */
         @media (max-width: 992px) {{
             .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
         }}
@@ -990,7 +978,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             .timeline-row {{ grid-template-columns: 1fr; gap: 0.2rem; }}
         }}
 
-        {focus_css}
+        {sidebar_visibility_css}
         </style>""",
         unsafe_allow_html=True,
     )
@@ -1005,45 +993,68 @@ if cases and not st.session_state.selected_lookup_key:
 inject_custom_css(
     st.session_state.theme_mode,
     st.session_state.focus_mode,
+    st.session_state.sidebar_hidden,
     st.session_state.font_scale,
 )
 
 
-# --- 7. SIDEBAR: THE FILING CABINET ---
+# --- 7. SIDEBAR: 2-TIER FILING CABINET (SUBJECT -> TOPIC -> CASES) ---
 with st.sidebar:
     st.markdown("### 🗄️ Filing Cabinet")
-    st.caption("Categorized Jurisprudence Repository")
+    st.caption("2-Tier Jurisprudence Repository (Subject → Topic)")
 
     if not cases:
-        st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator to populate your library.")
+        st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator or import a `.docx` casebook.")
     else:
-        actual_categories = sorted(list({c.get("category", "Uncategorized") or "Uncategorized" for c in cases}))
-        cat_counts = {
-            cat: sum(1 for c in cases if (c.get("category") or "Uncategorized") == cat)
-            for cat in actual_categories
-        }
+        # Tier 1: Subject Selector
+        all_subjects = sorted(list({c.get("subject", "General Jurisprudence") for c in cases}))
+        subj_counts = {s: sum(1 for c in cases if c.get("subject") == s) for s in all_subjects}
+        subj_options = ["-- All Subjects --"] + all_subjects
+        if st.session_state.selected_subject not in subj_options:
+            st.session_state.selected_subject = "-- All Subjects --"
 
-        cat_options = ["-- All Categories --"] + actual_categories
-        if st.session_state.selected_category not in cat_options:
-            st.session_state.selected_category = "-- All Categories --"
+        def _fmt_subject(opt: str) -> str:
+            if opt == "-- All Subjects --":
+                return f"📚 All Subjects ({len(cases)})"
+            return f"🏛️ {opt} ({subj_counts.get(opt, 0)})"
 
-        def _format_cat(opt: str) -> str:
-            if opt == "-- All Categories --":
-                return f"📚 All Cases ({len(cases)})"
-            return f"📁 {opt} ({cat_counts.get(opt, 0)})"
-
-        chosen_cat = st.selectbox(
-            "Browse by Syllabus Category",
-            options=cat_options,
-            index=cat_options.index(st.session_state.selected_category),
-            format_func=_format_cat,
+        chosen_subj = st.selectbox(
+            "Tier 1: Subject / Course",
+            options=subj_options,
+            index=subj_options.index(st.session_state.selected_subject),
+            format_func=_fmt_subject,
         )
-        st.session_state.selected_category = chosen_cat
+        if chosen_subj != st.session_state.selected_subject:
+            st.session_state.selected_subject = chosen_subj
+            st.session_state.selected_topic = "-- All Topics --"
+            st.rerun()
 
-        if chosen_cat == "-- All Categories --":
-            filtered_cases = cases
+        subj_filtered = cases if chosen_subj == "-- All Subjects --" else [c for c in cases if c.get("subject") == chosen_subj]
+
+        # Tier 2: Topic Selector (Scoped to selected Tier 1 Subject)
+        avail_topics = sorted(list({c.get("topic", "General Topic") for c in subj_filtered}))
+        top_counts = {t: sum(1 for c in subj_filtered if c.get("topic") == t) for t in avail_topics}
+        top_options = ["-- All Topics --"] + avail_topics
+        if st.session_state.selected_topic not in top_options:
+            st.session_state.selected_topic = "-- All Topics --"
+
+        def _fmt_topic(opt: str) -> str:
+            if opt == "-- All Topics --":
+                return f"📂 All Topics ({len(subj_filtered)})"
+            return f"📁 {opt} ({top_counts.get(opt, 0)})"
+
+        chosen_top = st.selectbox(
+            "Tier 2: Syllabus Topic",
+            options=top_options,
+            index=top_options.index(st.session_state.selected_topic),
+            format_func=_fmt_topic,
+        )
+        st.session_state.selected_topic = chosen_top
+
+        if chosen_top == "-- All Topics --":
+            filtered_cases = subj_filtered
         else:
-            filtered_cases = [c for c in cases if (c.get("category") or "Uncategorized") == chosen_cat]
+            filtered_cases = [c for c in subj_filtered if c.get("topic") == chosen_top]
 
         cabinet_filter = st.text_input(
             "Filter list by title or G.R. No.",
@@ -1096,32 +1107,44 @@ with st.sidebar:
 
 
 # --- 8. TOP INSTITUTIONAL MASTHEAD & CONTROLS ---
-unique_cats_count = len({c.get("category", "Uncategorized") for c in cases})
+unique_subjects_count = len({c.get("subject", "General Jurisprudence") for c in cases})
+unique_topics_count = len({c.get("topic", "General Topic") for c in cases})
 masthead_html = (
     "<div class='library-masthead'>"
     "<div class='masthead-brand'>"
     "<span class='masthead-icon'>⚖️</span>"
     "<div>"
     "<div class='masthead-title'>Philippine Jurisprudence Library</div>"
-    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • Doctrinal Matrix • Lexical Research Engine</div>"
+    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • 2-Tier Subject &amp; Topic Matrix • Lexical Research Engine</div>"
     "</div>"
     "</div>"
     "<div class='masthead-stats'>"
-    f"<span class='stat-pill'>📚 {len(cases)} Indexed Cases</span>"
-    f"<span class='stat-pill'>🗂️ {unique_cats_count} Syllabus Topics</span>"
+    f"<span class='stat-pill'>📚 {len(cases)} Cases</span>"
+    f"<span class='stat-pill'>🏛️ {unique_subjects_count} Subjects</span>"
+    f"<span class='stat-pill'>🗂️ {unique_topics_count} Topics</span>"
     "</div>"
     "</div>"
 )
 st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Top Control Strip: Search Bar | Study Persona Switcher | Typography Size | Focus Mode | Light/Dark Mode
-ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([3.0, 2.0, 1.3, 1.0, 1.0], gap="small")
+# Top Control Strip: Left Sidebar Toggle | Search Bar | Study Persona | Text Size | Focus Mode | Light/Dark Mode
+ctrl_col0, ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.05, 2.65, 1.85, 1.25, 0.95, 0.95], gap="small")
+
+with ctrl_col0:
+    sb_label = "📂 Show Cabinet" if (st.session_state.sidebar_hidden or st.session_state.focus_mode) else "📂 Hide Cabinet"
+    if st.button(sb_label, use_container_width=True, help="Toggle the Left Filing Cabinet sidebar on or off"):
+        if st.session_state.focus_mode:
+            st.session_state.focus_mode = False
+            st.session_state.sidebar_hidden = False
+        else:
+            st.session_state.sidebar_hidden = not st.session_state.sidebar_hidden
+        st.rerun()
 
 with ctrl_col1:
     search_input = st.text_input(
         "Universal Lexical Search",
         value=st.session_state.active_search_query,
-        placeholder="🔍 Search citations, G.R. numbers, doctrines, Latin maxims, or verbatim phrases...",
+        placeholder="🔍 Search citations, G.R. numbers, subjects, topics, doctrines, Latin maxims...",
         label_visibility="collapsed",
     )
     if search_input != st.session_state.active_search_query:
@@ -1158,13 +1181,13 @@ with ctrl_col3:
         st.rerun()
 
 with ctrl_col4:
-    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus Mode"
-    if st.button(focus_btn_label, use_container_width=True, help="Hide sidebars and center the legal document"):
+    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus"
+    if st.button(focus_btn_label, use_container_width=True, help="Hide both sidebars and center the legal document"):
         st.session_state.focus_mode = not st.session_state.focus_mode
         st.rerun()
 
 with ctrl_col5:
-    theme_btn_label = "☀️ Light Mode" if st.session_state.theme_mode == "Dark" else "🌙 Dark Mode"
+    theme_btn_label = "☀️ Light" if st.session_state.theme_mode == "Dark" else "🌙 Dark"
     if st.button(theme_btn_label, use_container_width=True, help="Toggle between Light Mode and Dark Mode"):
         st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
         st.rerun()
@@ -1179,7 +1202,10 @@ if query_str and bm25 and cases:
     ranked_pairs = []
     for idx, base_score in enumerate(scores):
         c_item = cases[idx]
-        haystack = f"{c_item.get('citation', '')} {c_item.get('category', '')} {c_item.get('digest', '')}".lower()
+        haystack = (
+            f"{c_item.get('citation', '')} {c_item.get('subject', '')} "
+            f"{c_item.get('topic', '')} {c_item.get('digest', '')}"
+        ).lower()
         exact_boost = 5.0 if query_str.lower() in haystack else 0.0
         total_score = float(base_score) + exact_boost
         if total_score > 0:
@@ -1207,7 +1233,8 @@ if query_str and bm25 and cases:
             card_html = (
                 "<div class='search-card'>"
                 "<div class='breadcrumb-bar'>"
-                f"<span class='cat-badge'>{html.escape(match_case.get('category', 'General'))}</span>"
+                f"<span class='subj-badge'>🏛️ {html.escape(match_case.get('subject', 'General'))}</span>"
+                f"<span class='cat-badge'>📁 {html.escape(match_case.get('topic', 'General'))}</span>"
                 f"<span class='gr-badge'>{html.escape(match_case.get('lookup_key', ''))}</span>"
                 f"<span class='gr-badge'>BM25 Score: {score_val:.2f}</span>"
                 "</div>"
@@ -1255,7 +1282,10 @@ with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)"
     m_col1, m_col2 = st.columns(2)
     with m_col1:
         all_uids = [c["_uid"] for c in cases]
-        all_labels = {c["_uid"]: f"{c.get('citation', '')} [{c.get('category', '')}]" for c in cases}
+        all_labels = {
+            c["_uid"]: f"{c.get('citation', '')} [{c.get('subject', '')} | {c.get('topic', '')}]"
+            for c in cases
+        }
         mob_uid = st.selectbox(
             "Switch Case",
             options=all_uids,
@@ -1274,7 +1304,6 @@ with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)"
                 idx_s = sec_opts.index(chosen_mob_sec) - 1
                 st.session_state.scroll_to_anchor = sections[idx_s]["anchor"]
 
-# Layout allocation: Focus Mode vs Desktop 2-column (Reader + Study Navigator)
 if st.session_state.focus_mode:
     reader_container = st.container()
     nav_container = None
@@ -1282,7 +1311,7 @@ else:
     reader_container, nav_container = st.columns([3.3, 1.15], gap="large")
 
 
-# --- 10B. RIGHT SIDEBAR: STUDY NAVIGATOR (Processed first so button clicks update scroll_to_anchor immediately) ---
+# --- 10B. RIGHT SIDEBAR: STUDY NAVIGATOR ---
 if nav_container is not None:
     with nav_container:
         st.markdown(
@@ -1315,9 +1344,10 @@ if nav_container is not None:
             st.code(cite_block, language="markdown")
 
 
-# --- 10A. CENTRAL READING PANE (Single-line HTML assembly so Markdown NEVER treats blocks as <pre><code>) ---
+# --- 10A. CENTRAL READING PANE ---
 with reader_container:
-    cat_label = active_case.get("category", "General Jurisprudence") or "General Jurisprudence"
+    subj_label = active_case.get("subject", "General Jurisprudence") or "General Jurisprudence"
+    topic_label = active_case.get("topic", "General Topic") or "General Topic"
     gr_label = active_case.get("lookup_key", "")
     date_cat = active_case.get("date_cataloged", "Unknown")[:10]
     src_url = active_case.get("url", "")
@@ -1327,7 +1357,6 @@ with reader_container:
         else "<span>📄 Offline Local Digest</span>"
     )
 
-    # Render Mode-Specific Top Aide Banner (Zero leading indentation!)
     mode_banner_html = ""
     if st.session_state.study_mode == "⚡ Exam & Recit Review":
         trigger_txt = meta.get("factual_trigger", "See Section 2 & Section 3 below for factual trigger.")
@@ -1350,7 +1379,7 @@ with reader_container:
 
     elif st.session_state.study_mode == "🔎 Legal Research":
         posture_txt = meta.get("procedural_posture", "See Section 1.")
-        topic_txt = meta.get("primary_topic", cat_label)
+        topic_txt = meta.get("primary_topic", f"{subj_label} → {topic_label}")
         quotes_html = "".join(
             f"<div class='quote-callout'><div class='quote-callout-label'>📜 Verbatim Doctrinal Holding #{i+1}</div><div class='quote-callout-body'>{format_inline_markdown(q)}</div></div>"
             for i, q in enumerate(quotes[:3])
@@ -1364,7 +1393,6 @@ with reader_container:
             "</div>"
         )
 
-    # Build the continuous scrollable legal document HTML with zero 4-space indentation
     sections_html_list: List[str] = []
     for sec in sections:
         sec_body_html = render_section_lines_to_html(sec["lines"], sec["num"])
@@ -1380,7 +1408,11 @@ with reader_container:
 
     reader_html = (
         "<div class='reader-sheet'>"
-        f"<div class='breadcrumb-bar'><span class='cat-badge'>📁 {html.escape(cat_label)}</span>{gr_pill_html}</div>"
+        f"<div class='breadcrumb-bar'>"
+        f"<span class='subj-badge'>🏛️ {html.escape(subj_label)}</span>"
+        f"<span class='cat-badge'>📁 {html.escape(topic_label)}</span>"
+        f"{gr_pill_html}"
+        f"</div>"
         f"<h1 class='case-main-title'>{html.escape(active_case.get('citation', 'Untitled Case'))}</h1>"
         f"<div class='case-meta-row'><span>🗓️ Cataloged: <strong>{html.escape(date_cat)}</strong></span><span>•</span>{source_link_html}</div>"
         f"{mode_banner_html}"
@@ -1392,7 +1424,7 @@ with reader_container:
 # Execute smooth JavaScript scroll into view in parent DOM when a section button is clicked
 if st.session_state.scroll_to_anchor:
     target_id = st.session_state.scroll_to_anchor
-    st.components.v1.html(
+    components.html(
         f"""
         <script>
         (function() {{
