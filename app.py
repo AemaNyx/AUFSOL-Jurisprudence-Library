@@ -6,6 +6,21 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 from rank_bm25 import BM25Okapi
 
+
+import streamlit as st
+
+hide_complete_header = """
+    <style>
+    div[data-testid="stToolbar"] { visibility: hidden; height: 0%; position: fixed; }
+    div[data-testid="stDecoration"] { visibility: hidden; height: 0%; position: fixed; }
+    div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
+    header { visibility: hidden; height: 0%; }
+    </style>
+"""
+st.markdown(hide_complete_header, unsafe_allow_html=True)
+
+
+
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="Philippine Jurisprudence Library",
