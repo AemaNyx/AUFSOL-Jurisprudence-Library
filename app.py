@@ -114,20 +114,29 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
     return cases, bm25, tokenized_corpus
 
 
-# --- 4. MARKDOWN DIGEST PARSER & STRICT SECTION CLASSIFIER ---
+# --- 4. MARKDOWN DIGEST PARSER & UNIVERSAL SECTION CLASSIFIER (v1-v8 Compatible) ---
 CANONICAL_SEC_KEYWORDS = {
-    "1": ("case header", "cast of characters", "procedural posture"),
-    "2": ("syllabus topic", "codal provision", "factual trigger"),
-    "3": ("chronological facts", "facts storyboard", "factual background"),
-    "4": ("party arguments", "arguments matrix", "exhaustive party"),
-    "5": ("inventory of issues", "complete inventory", "issues found"),
-    "6": ("deep-dive verdict", "ratio decidendi", "verdict & ratio"),
+    "1": ("case header", "cast of characters", "procedural posture", "case title", "caption"),
+    "2": ("syllabus topic", "codal provision", "factual trigger", "nature of the action", "nature of action"),
+    "3": ("chronological facts", "facts storyboard", "factual background", "facts", "antecedent facts", "statement of facts"),
+    "4": ("party arguments", "arguments matrix", "exhaustive party", "issues", "statement of issues"),
+    "5": ("inventory of issues", "complete inventory", "issues found", "ruling", "ratio decidendi", "held"),
+    "6": ("deep-dive verdict", "ratio decidendi", "verdict & ratio", "doctrinal takeaway", "doctrine", "principle"),
     "6.5": ("subject-specific", "doctrinal & recitation", "recitation spotlight"),
-    "7": ("separate opinions", "overall verdict", "fallo"),
+    "7": ("separate opinions", "overall verdict", "fallo", "dispositive"),
 }
 
 MAJOR_SEC_CANDIDATE_RE = re.compile(
-    r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?)[.)]?\s+(.+?)(?:\*\*)?\s*$"
+    r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?|[IVXLCDM]{1,6})[.)]?\s+(.+?)(?:\*\*)?\s*$"
+)
+
+STANDALONE_HEADING_RE = re.compile(
+    r"^(?:#{1,4}\s+)(?:\*\*)?(.+?)(?:\*\*)?\s*$|"
+    r"^(?:\*\*)?(CASE\s+TITLE\s*&\s*CAPTION|NATURE\s+OF\s+THE\s+ACTION|STATEMENT\s+OF\s+FACTS|"
+    r"ANTECEDENT\s+FACTS|CHRONOLOGICAL\s+FACTS|FACTS|ISSUES|STATEMENT\s+OF\s+ISSUES|"
+    r"RULING\s*&\s*RATIO\s+DECIDENDI|RULING|RATIO\s+DECIDENDI|"
+    r"DOCTRINAL\s+TAKEAWAY(?:\s*/\s*PRINCIPLE)?|DOCTRINE|FALLO|DISPOSITIVE\s+PORTION)(?:\*\*)?\s*:?\s*$",
+    re.IGNORECASE,
 )
 
 INLINE_LABEL_PATTERN = re.compile(
@@ -140,7 +149,8 @@ INLINE_LABEL_PATTERN = re.compile(
     r"Main Thesis|Specific Contentions|Recitation-Ready Question|"
     r"Assigned Course & Syllabus Focus|Doctrinal Requisites[^:*]*|"
     r"Subject-Specific Terms of Art[^:*]*|Cold-Call Synthesis[^:*]*|"
-    r"Separate Opinions Summary|Verbatim/Near-Verbatim Fallo|Plain-Language Outcome"
+    r"Separate Opinions Summary|Verbatim/Near-Verbatim Fallo|Plain-Language Outcome|"
+    r"Title|Case Title|Court|Date Promulgated|Ponente|Vote|Voting|Held|Doctrine"
     r")(?:\*\*)?\s*:\s*(?:\*\*)?\s*(.*)$",
     re.IGNORECASE,
 )
@@ -148,10 +158,14 @@ INLINE_LABEL_PATTERN = re.compile(
 
 def is_canonical_major_section(sec_num: str, sec_title: str, raw_line: str) -> bool:
     t_lower = sec_title.lower()
+    if t_lower.startswith("whether ") or t_lower.startswith("[primary") or t_lower.startswith("[procedural"):
+        return False
     expected = CANONICAL_SEC_KEYWORDS.get(sec_num, ())
     if any(k in t_lower for k in expected):
         return True
-    if raw_line.strip().startswith("#") and len(sec_title) < 95:
+    if re.match(r"^[IVXLCDM]+$", sec_num, re.IGNORECASE) and len(sec_title) < 95:
+        return True
+    if raw_line.strip().startswith("#") and len(sec_title) < 100:
         return True
     return False
 
@@ -178,10 +192,11 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
     issues: List[str] = []
 
     current_sec: Optional[Dict[str, Any]] = None
+    auto_sec_counter = 1
 
     for raw_line in lines:
         stripped = raw_line.strip()
-        if not stripped:
+        if not stripped or re.fullmatch(r"(?:-{3,}|—{3,}|–{3,})", stripped):
             if current_sec is not None:
                 current_sec["lines"].append("")
             continue
@@ -191,9 +206,9 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
         m_sec = MAJOR_SEC_CANDIDATE_RE.match(heading_candidate_clean)
 
         if m_sec and is_canonical_major_section(m_sec.group(1), m_sec.group(2), stripped):
-            sec_num = m_sec.group(1)
+            sec_num = m_sec.group(1).upper()
             sec_title = clean_stray_asterisks(m_sec.group(2))
-            anchor_id = f"sec-{sec_num.replace('.', '-')}-{slugify(sec_title)[:28]}"
+            anchor_id = f"sec-{sec_num.replace('.', '-')}-{slugify(sec_title)[:28]}-{len(sections)}"
             current_sec = {
                 "num": sec_num,
                 "title": f"{sec_num}. {sec_title}",
@@ -203,6 +218,24 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
             }
             sections.append(current_sec)
             continue
+
+        m_standalone = STANDALONE_HEADING_RE.match(stripped)
+        if m_standalone:
+            raw_h = m_standalone.group(1) or m_standalone.group(2) or ""
+            sec_title = clean_stray_asterisks(raw_h.rstrip(":"))
+            if sec_title and len(sec_title) < 95:
+                sec_num = str(auto_sec_counter)
+                auto_sec_counter += 1
+                anchor_id = f"sec-{sec_num}-{slugify(sec_title)[:28]}-{len(sections)}"
+                current_sec = {
+                    "num": sec_num,
+                    "title": sec_title,
+                    "short_title": sec_title,
+                    "anchor": anchor_id,
+                    "lines": [],
+                }
+                sections.append(current_sec)
+                continue
 
         if current_sec is None:
             current_sec = {
@@ -220,12 +253,16 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
         if m_label:
             k_raw = m_label.group(1).strip().lower()
             v_raw = clean_stray_asterisks(m_label.group(2))
-            if "concise recognizable title" in k_raw:
-                metadata_map["concise_title"] = v_raw
+            if "concise recognizable title" in k_raw or k_raw in ("title", "case title"):
+                metadata_map.setdefault("concise_title", v_raw)
             elif "full official caption" in k_raw:
                 metadata_map["official_caption"] = v_raw
-            elif "citation & metadata" in k_raw:
-                metadata_map["citation_metadata"] = v_raw
+            elif "citation & metadata" in k_raw or k_raw in ("court", "ponente"):
+                metadata_map["citation_metadata"] = (
+                    f"{metadata_map['citation_metadata']} | {v_raw}"
+                    if "citation_metadata" in metadata_map
+                    else v_raw
+                )
             elif "key parties" in k_raw:
                 metadata_map["key_parties"] = v_raw
             elif "how the case reached" in k_raw:
@@ -234,19 +271,20 @@ def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
                 metadata_map["primary_topic"] = v_raw
             elif "factual trigger" in k_raw and v_raw:
                 metadata_map["factual_trigger"] = v_raw
-            elif "cold-call synthesis" in k_raw and v_raw:
-                metadata_map["cold_call"] = v_raw
+            elif ("cold-call synthesis" in k_raw or k_raw == "doctrine") and v_raw:
+                metadata_map.setdefault("cold_call", v_raw)
             elif "subject-specific terms" in k_raw and v_raw:
                 metadata_map["magic_words"] = v_raw
             elif "doctrinal requisites" in k_raw and v_raw:
                 metadata_map["doctrinal_requisites"] = v_raw
             elif "verbatim/near-verbatim fallo" in k_raw and v_raw:
                 metadata_map["fallo"] = v_raw
-            elif "plain-language outcome" in k_raw and v_raw:
-                metadata_map["outcome"] = v_raw
+            elif ("plain-language outcome" in k_raw or k_raw == "held") and v_raw:
+                metadata_map.setdefault("outcome", v_raw)
 
-        if current_sec["num"] == "5":
-            if re.match(r"^\d+[.)]\s+", stripped) or "whether or not" in stripped.lower():
+        sec_title_lower = current_sec["short_title"].lower()
+        if current_sec["num"] == "5" or "issue" in sec_title_lower:
+            if re.match(r"^\d+[.)]\s+", stripped) or "whether or not" in stripped.lower() or stripped.endswith("?"):
                 issues.append(clean_stray_asterisks(stripped))
 
         if "golden verbatim quote" in stripped.lower() or stripped.startswith(">"):
