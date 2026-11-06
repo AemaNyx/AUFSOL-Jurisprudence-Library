@@ -460,6 +460,397 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
     return format_inline_markdown(snippet, query_tokens)
 
 
+
+# --- 4B. AUTOMATED AUDIO CASE BRIEFING ENGINE (Edge Neural TTS: en-US-AndrewMultilingualNeural) ---
+DEFAULT_AUDIO_VOICE = "en-US-AndrewMultilingualNeural"
+AUDIO_DIR = Path("case_library/audio_briefs")
+
+
+def clean_text_for_speech(text: str) -> str:
+    """Cleans Markdown formatting and expands Philippine legal abbreviations for natural spoken delivery."""
+    if not text:
+        return ""
+    s = text.strip()
+    s = re.sub(r"^#{1,6}\s*", "", s, flags=re.MULTILINE)
+    s = re.sub(
+        r"\[(PRIMARY SYLLABUS ISSUE|Procedural\s*/\s*Secondary Issue|SECONDARY ISSUE|PROCEDURAL ISSUE)\]",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
+    s = s.replace("**", "").replace("*", "").replace("`", "")
+    s = re.sub(r"^>\s*", "", s, flags=re.MULTILINE)
+    s = re.sub(r"→|->|⟶", ", leading to ", s)
+
+    s = re.sub(r"\bv\.?\s+", " versus ", s)
+    s = re.sub(r"\bvs\.?\s+", " versus ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bG\.?\s*R\.?\s*Nos?\.?\s*", "G.R. Number ", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bArt\.\s*", "Article ", s)
+    s = re.sub(r"\bArts\.\s*", "Articles ", s)
+    s = re.sub(r"\bSec\.\s*", "Section ", s)
+    s = re.sub(r"\bSecs\.\s*", "Sections ", s)
+    s = re.sub(r"\bPar\.\s*", "Paragraph ", s)
+    s = re.sub(r"\bNo\.\s*(\d)", r"Number \1", s)
+    s = re.sub(r"\bC\.?\s*J\.?\b", "Chief Justice", s)
+    s = re.sub(r",\s*J\.?\b", ", Justice", s)
+    s = re.sub(r"\bRTC\b", "Regional Trial Court", s)
+    s = re.sub(r"\bCA\b", "Court of Appeals", s)
+    s = re.sub(r"\bOSG\b", "Office of the Solicitor General", s)
+    s = re.sub(r"\bCOA\b", "Commission on Audit", s)
+    s = re.sub(r"\bCOMELEC\b", "Commission on Elections", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _strip_md_and_bullets(line: str) -> str:
+    s = line.strip()
+    s = re.sub(r"^(?:[-•●▪]|\*(?!\*))\s+", "", s)
+    s = s.replace("**", "")
+    s = re.sub(r"^\*+|\*+$", "", s).strip()
+    return s
+
+
+def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
+    """Returns deterministic (primer_mp3_path, chapter_mp3_path) inside case_library/audio_briefs/."""
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    raw_key = case_entry.get("lookup_key") or "case"
+    key = re.sub(r"[^A-Za-z0-9_-]", "", str(raw_key))[:28] or "case"
+    subj = re.sub(r"[^A-Za-z0-9]", "", str(case_entry.get("subject") or "gen"))[:18].lower() or "gen"
+    top = re.sub(r"[^A-Za-z0-9]", "", str(case_entry.get("topic") or "top"))[:18].lower() or "top"
+    stem = f"{key}_{subj}_{top}".strip("_")
+
+    p_custom = case_entry.get("audio_primer")
+    c_custom = case_entry.get("audio_chapter")
+    p_path = Path(p_custom) if (p_custom and Path(p_custom).exists()) else (AUDIO_DIR / f"{stem}_primer.mp3")
+    c_path = Path(c_custom) if (c_custom and Path(c_custom).exists()) else (AUDIO_DIR / f"{stem}_chapter.mp3")
+    return p_path, c_path
+
+
+def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Builds two spoken scripts for Microsoft Edge Neural TTS (en-US-AndrewMultilingualNeural):
+      1. primer_script: 60-90 Second Cold-Call Primer
+      2. chapter_script: Complete Full-Text Substitute Audio Chapter with Plain-Language & Plain-Explanation Emphasis
+    """
+    citation = case_entry.get("citation", "Untitled Case")
+    subject = case_entry.get("subject") or "General Jurisprudence"
+    topic = case_entry.get("topic") or case_entry.get("category") or "General Topic"
+    digest = case_entry.get("digest", "")
+
+    fields: Dict[str, str] = {}
+    timeline_events: List[str] = []
+    issues_list: List[str] = []
+    issue_blocks: List[Dict[str, str]] = []
+    plain_explanations: List[str] = []
+    short_answers: List[str] = []
+    ratios: List[str] = []
+    golden_quotes: List[str] = []
+    pet_args: List[str] = []
+    resp_args: List[str] = []
+    spotlight_extra: List[str] = []
+
+    current_sec = "0"
+    current_party = ""
+    current_issue_block: Dict[str, str] = {}
+
+    sec_re = re.compile(
+        r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?|[IVXLCDM]{1,6})[.)]?\s+(.+?)(?:\*\*)?\s*$",
+        re.IGNORECASE,
+    )
+
+    for raw_line in digest.splitlines():
+        s = raw_line.strip()
+        if not s or re.fullmatch(r"(?:-{3,}|—{3,}|–{3,})", s):
+            continue
+
+        s_no_hash = re.sub(r"^#{1,4}\s*", "", s).strip("* ").strip()
+        m_sec = sec_re.match(s_no_hash)
+        if m_sec and len(s_no_hash) < 110 and not s_no_hash.lower().startswith("whether "):
+            sec_id = m_sec.group(1).upper()
+            sec_title_low = m_sec.group(2).lower()
+            if "6.5" in sec_id or "spotlight" in sec_title_low or "subject-specific" in sec_title_low:
+                current_sec = "6.5"
+                continue
+            elif "header" in sec_title_low or "caption" in sec_title_low or sec_id in ("1", "I"):
+                current_sec = "1"
+                continue
+            elif "syllabus" in sec_title_low or "trigger" in sec_title_low or "nature" in sec_title_low or sec_id in ("2", "II"):
+                current_sec = "2"
+                continue
+            elif "chronological" in sec_title_low or "storyboard" in sec_title_low or "facts" in sec_title_low or sec_id in ("3", "III"):
+                current_sec = "3"
+                continue
+            elif "argument" in sec_title_low or "party" in sec_title_low:
+                current_sec = "4"
+                continue
+            elif "inventory of issues" in sec_title_low or "issues" in sec_title_low:
+                current_sec = "5"
+                continue
+            elif "verdict & ratio" in sec_title_low or "deep-dive" in sec_title_low or "ruling" in sec_title_low or "ratio decidendi" in sec_title_low:
+                current_sec = "6"
+                continue
+            elif "separate opinion" in sec_title_low or "fallo" in sec_title_low or "doctrinal takeaway" in sec_title_low or sec_id in ("7", "VII"):
+                current_sec = "7"
+                continue
+
+        s_unbold = _strip_md_and_bullets(s)
+        low = s_unbold.lower()
+
+        if low.startswith("concise recognizable title:"):
+            fields["concise_title"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("full official caption:"):
+            fields["official_caption"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("citation & metadata:"):
+            fields["citation_metadata"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("key parties & roles"):
+            fields["key_parties"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("how the case reached the supreme court:"):
+            fields["posture"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("primary topic hierarchy:"):
+            fields["primary_hierarchy"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("full text of governing"):
+            fields["governing_law"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
+            continue
+        elif low.startswith("factual trigger"):
+            fields["factual_trigger"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("doctrinal requisites"):
+            fields["requisites"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("subject-specific terms of art"):
+            fields["magic_words"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("cold-call synthesis"):
+            fields["cold_call"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("separate opinions summary:"):
+            fields["separate_opinions"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("verbatim/near-verbatim fallo:"):
+            fields["fallo"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("plain-language outcome:"):
+            fields["outcome"] = s_unbold.split(":", 1)[1].strip()
+            continue
+
+        if current_sec == "3":
+            timeline_events.append(s_unbold)
+        elif current_sec == "4":
+            if re.match(r"^A\.\s*Petitioner", s_unbold, re.IGNORECASE):
+                current_party = "P"
+            elif re.match(r"^B\.\s*Respondent", s_unbold, re.IGNORECASE):
+                current_party = "R"
+            elif current_party == "P":
+                pet_args.append(s_unbold)
+            elif current_party == "R":
+                resp_args.append(s_unbold)
+        elif current_sec == "5":
+            if low.startswith("recitation-ready question:"):
+                q_txt = s_unbold.split(":", 1)[1].strip()
+                if issues_list:
+                    issues_list[-1] = f"{issues_list[-1]} Specifically: {q_txt}"
+                else:
+                    issues_list.append(q_txt)
+            else:
+                issues_list.append(s_unbold)
+        elif current_sec == "6":
+            m_sub = re.match(r"^\(?([a-d])\)?\s*[^:]{2,55}:\s*(.*)$", s_unbold, re.IGNORECASE)
+            if m_sub:
+                sub_letter = m_sub.group(1).lower()
+                sub_val = m_sub.group(2).strip()
+                if sub_letter == "a":
+                    if current_issue_block:
+                        issue_blocks.append(current_issue_block)
+                    current_issue_block = {"a": sub_val}
+                    short_answers.append(sub_val)
+                elif sub_letter == "b":
+                    current_issue_block["b"] = sub_val
+                    ratios.append(sub_val)
+                elif sub_letter == "c":
+                    current_issue_block["c"] = sub_val
+                    golden_quotes.append(sub_val)
+                elif sub_letter == "d":
+                    current_issue_block["d"] = sub_val
+                    plain_explanations.append(sub_val)
+            else:
+                if "d" in current_issue_block:
+                    current_issue_block["d"] += " " + s_unbold
+                elif "b" in current_issue_block:
+                    current_issue_block["b"] += " " + s_unbold
+                else:
+                    ratios.append(s_unbold)
+        elif current_sec == "6.5":
+            if not low.startswith("assigned course"):
+                spotlight_extra.append(s_unbold)
+
+    if current_issue_block:
+        issue_blocks.append(current_issue_block)
+
+    title_spoken = clean_text_for_speech(fields.get("concise_title") or citation)
+    subj_spoken = clean_text_for_speech(subject)
+    top_spoken = clean_text_for_speech(topic)
+
+    trigger_spoken = clean_text_for_speech(
+        fields.get("factual_trigger")
+        or (" ".join(timeline_events[:2]) if timeline_events else "See case facts.")
+    )
+    primary_issue_spoken = clean_text_for_speech(
+        issues_list[0] if issues_list else (short_answers[0] if short_answers else "Whether the challenged act or ruling was valid.")
+    )
+    verdict_spoken = clean_text_for_speech(
+        short_answers[0] if short_answers else (ratios[0][:280] if ratios else "")
+    )
+    plain_exp_spoken = clean_text_for_speech(
+        plain_explanations[0] if plain_explanations else ""
+    )
+    cold_call_spoken = clean_text_for_speech(fields.get("cold_call", ""))
+    magic_spoken = clean_text_for_speech(fields.get("magic_words", ""))
+    outcome_spoken = clean_text_for_speech(
+        fields.get("outcome") or fields.get("fallo", "")
+    )
+
+    primer_parts = [
+        f"Cold-Call Audio Primer: {title_spoken}.",
+        f"Subject: {subj_spoken}. Syllabus Topic: {top_spoken}.",
+        f"Here is the Factual Trigger that sparked the case: {trigger_spoken}",
+        f"Primary Issue: {primary_issue_spoken}",
+    ]
+    if verdict_spoken:
+        primer_parts.append(f"Supreme Court Ruling: {verdict_spoken}")
+    if plain_exp_spoken:
+        primer_parts.append(f"In plain, everyday language: {plain_exp_spoken}")
+    if cold_call_spoken:
+        primer_parts.append(f"Thirty-Second Cold-Call Synthesis: {cold_call_spoken}")
+    if magic_spoken:
+        primer_parts.append(f"Key Terms of Art and Magic Words for recitation: {magic_spoken}.")
+    if outcome_spoken:
+        primer_parts.append(f"Final Outcome: {outcome_spoken}")
+
+    primer_script = "\n\n".join(p for p in primer_parts if p.strip())
+
+    chapter_parts = [
+        f"Complete Audio Case Chapter, Plain-Language Edition. {clean_text_for_speech(citation)}.",
+        f"Filed under {subj_spoken}, syllabus topic: {top_spoken}.",
+    ]
+
+    sec1_intro = []
+    if fields.get("key_parties"):
+        sec1_intro.append(f"The Cast of Characters: {clean_text_for_speech(fields['key_parties'])}")
+    if fields.get("posture"):
+        sec1_intro.append(f"How the case reached the Supreme Court: {clean_text_for_speech(fields['posture'])}")
+    if trigger_spoken:
+        sec1_intro.append(f"Plain-Language Story Hook and Factual Trigger: {trigger_spoken}")
+    if outcome_spoken:
+        sec1_intro.append(f"Bottom-Line Outcome up front: {outcome_spoken}")
+    if sec1_intro:
+        chapter_parts.append("Part 1. Case Overview, Parties, and Story Hook. " + " ".join(sec1_intro))
+
+    if fields.get("primary_hierarchy") or fields.get("governing_law"):
+        gov_lines = []
+        if fields.get("primary_hierarchy"):
+            gov_lines.append(f"Doctrinal Classification: {clean_text_for_speech(fields['primary_hierarchy'])}.")
+        if fields.get("governing_law"):
+            gov_lines.append(f"Governing Constitutional or Statutory Provision: {clean_text_for_speech(fields['governing_law'])}")
+        chapter_parts.append("Part 2. Governing Law and Syllabus Framework. " + " ".join(gov_lines))
+
+    if timeline_events:
+        timeline_spoken = " ".join(clean_text_for_speech(ev) for ev in timeline_events)
+        chapter_parts.append(f"Part 3. Chronological Facts Storyboard. Here is how the events unfolded step by step: {timeline_spoken}")
+
+    if pet_args or resp_args:
+        arg_lines = ["Part 4. Competing Arguments of the Parties."]
+        if pet_args:
+            arg_lines.append("For the Petitioner: " + " ".join(clean_text_for_speech(a) for a in pet_args))
+        if resp_args:
+            arg_lines.append("For the Respondent: " + " ".join(clean_text_for_speech(a) for a in resp_args))
+        chapter_parts.append(" ".join(arg_lines))
+
+    if issue_blocks:
+        ruling_narration = [
+            "Part 5. Issues, Plain-Language Explanations, and Supreme Court Ratio Decidendi. "
+            "For each issue, we will first hear the direct answer and plain-English explanation, followed by the Court's detailed legal reasoning."
+        ]
+        for idx_b, blk in enumerate(issue_blocks, start=1):
+            a_txt = clean_text_for_speech(blk.get("a", ""))
+            d_txt = clean_text_for_speech(blk.get("d", ""))
+            b_txt = clean_text_for_speech(blk.get("b", ""))
+            c_txt = clean_text_for_speech(blk.get("c", ""))
+
+            item_speech = [f"Issue {idx_b}: {a_txt}"]
+            if d_txt:
+                item_speech.append(f"In plain, everyday language: {d_txt}")
+            if b_txt:
+                item_speech.append(f"Step-by-Step Legal Reasoning: {b_txt}")
+            if c_txt:
+                item_speech.append(f"In the exact words of the Supreme Court: {c_txt}")
+            ruling_narration.append(" ".join(item_speech))
+        chapter_parts.append("\n\n".join(ruling_narration))
+    elif ratios or issues_list:
+        fallback_ruling = ["Part 5. Issues and Supreme Court Ruling."]
+        if issues_list:
+            fallback_ruling.append("Issues: " + " ".join(clean_text_for_speech(i) for i in issues_list))
+        if ratios:
+            fallback_ruling.append("Ruling and Ratio: " + " ".join(clean_text_for_speech(r) for r in ratios))
+        chapter_parts.append(" ".join(fallback_ruling))
+
+    spot_lines = []
+    if fields.get("requisites"):
+        spot_lines.append(f"Doctrinal Requisites and Elements Checklist: {clean_text_for_speech(fields['requisites'])}")
+    if magic_spoken:
+        spot_lines.append(f"Subject-Specific Terms of Art and Magic Words: {magic_spoken}.")
+    if cold_call_spoken:
+        spot_lines.append(f"Cold-Call Recitation Synthesis: {cold_call_spoken}")
+    if spotlight_extra:
+        spot_lines.append(" ".join(clean_text_for_speech(x) for x in spotlight_extra))
+    if spot_lines:
+        chapter_parts.append("Part 6. Subject-Specific Doctrinal and Recitation Spotlight. " + " ".join(spot_lines))
+
+    sec7_lines = []
+    if outcome_spoken:
+        sec7_lines.append(f"Plain-Language Outcome: {outcome_spoken}")
+    if fields.get("fallo"):
+        sec7_lines.append(f"Official Dispositive Portion, or Fallo: {clean_text_for_speech(fields['fallo'])}")
+    if fields.get("separate_opinions") and "no separate opinions" not in fields["separate_opinions"].lower():
+        sec7_lines.append(f"Separate Opinions: {clean_text_for_speech(fields['separate_opinions'])}")
+    if sec7_lines:
+        chapter_parts.append("Part 7. Final Disposition and Outcome. " + " ".join(sec7_lines))
+
+    chapter_script = "\n\n".join(p for p in chapter_parts if p.strip())
+    return primer_script, chapter_script
+
+
+def synthesize_edge_tts_mp3(
+    script_text: str,
+    output_path: Path,
+    voice: str = DEFAULT_AUDIO_VOICE,
+    rate: str = "+0%",
+) -> Tuple[bool, str]:
+    """Synthesizes an MP3 file using edge-tts (en-US-AndrewMultilingualNeural)."""
+    import asyncio
+    import edge_tts
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        async def _run_tts():
+            communicate = edge_tts.Communicate(text=script_text, voice=voice, rate=rate)
+            await communicate.save(str(output_path))
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run_tts())
+        finally:
+            loop.close()
+        return True, str(output_path)
+    except Exception as exc:
+        return False, str(exc)
+
+
 # --- 5. THEME, WIDGET CONTRAST & RESPONSIVE CSS INJECTION ---
 def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_scale: str):
     is_dark = theme == "Dark"
@@ -1384,6 +1775,62 @@ if nav_container is not None:
 
 # --- 10A. CENTRAL READING PANE ---
 with reader_container:
+    # --- BUILT-IN DUAL AUDIO BRIEFING PLAYER (en-US-AndrewMultilingualNeural) ---
+    primer_mp3_path, chapter_mp3_path = get_audio_file_paths(active_case)
+    primer_script_txt, chapter_script_txt = build_audio_scripts_for_case(active_case)
+
+    with st.expander("🎧 Audio Case Briefings — Microsoft Edge Neural TTS (AndrewMultilingualNeural)", expanded=True):
+        aud_col1, aud_col2 = st.columns(2, gap="medium")
+
+        with aud_col1:
+            st.markdown("**⚡ 1. 60–90s Cold-Call Primer**")
+            st.caption("High-yield trigger, primary issue, ruling & magic words.")
+            if primer_mp3_path.exists():
+                st.audio(str(primer_mp3_path), format="audio/mp3")
+                if st.button("🔄 Regenerate Primer MP3", key=f"regen_primer_{active_case['_uid']}", use_container_width=True):
+                    with st.spinner("Synthesizing 60–90s Primer with AndrewMultilingualNeural..."):
+                        ok_p, msg_p = synthesize_edge_tts_mp3(primer_script_txt, primer_mp3_path, voice=DEFAULT_AUDIO_VOICE)
+                        if ok_p:
+                            st.rerun()
+                        else:
+                            st.error(f"TTS Error: {msg_p}")
+            else:
+                if st.button("🔊 Generate & Play 60–90s Primer", key=f"gen_primer_{active_case['_uid']}", use_container_width=True):
+                    with st.spinner("Synthesizing 60–90s Primer with AndrewMultilingualNeural..."):
+                        ok_p, msg_p = synthesize_edge_tts_mp3(primer_script_txt, primer_mp3_path, voice=DEFAULT_AUDIO_VOICE)
+                        if ok_p:
+                            st.rerun()
+                        else:
+                            st.error(f"TTS Error: {msg_p}")
+
+        with aud_col2:
+            st.markdown("**📖 2. Complete Audio Chapter (Plain-Language Emphasis)**")
+            st.caption("Full-text substitute walkthrough prioritizing plain explanations.")
+            if chapter_mp3_path.exists():
+                st.audio(str(chapter_mp3_path), format="audio/mp3")
+                if st.button("🔄 Regenerate Chapter MP3", key=f"regen_chap_{active_case['_uid']}", use_container_width=True):
+                    with st.spinner("Synthesizing Complete Plain-Language Chapter with AndrewMultilingualNeural..."):
+                        ok_c, msg_c = synthesize_edge_tts_mp3(chapter_script_txt, chapter_mp3_path, voice=DEFAULT_AUDIO_VOICE)
+                        if ok_c:
+                            st.rerun()
+                        else:
+                            st.error(f"TTS Error: {msg_c}")
+            else:
+                if st.button("🔊 Generate & Play Complete Audio Chapter", key=f"gen_chap_{active_case['_uid']}", use_container_width=True):
+                    with st.spinner("Synthesizing Complete Plain-Language Chapter with AndrewMultilingualNeural..."):
+                        ok_c, msg_c = synthesize_edge_tts_mp3(chapter_script_txt, chapter_mp3_path, voice=DEFAULT_AUDIO_VOICE)
+                        if ok_c:
+                            st.rerun()
+                        else:
+                            st.error(f"TTS Error: {msg_c}")
+
+        with st.expander("📜 View Spoken Audio Transcripts (Primer & Plain-Language Chapter)", expanded=False):
+            t_tab1, t_tab2 = st.tabs(["⚡ 60–90s Primer Script", "📖 Complete Chapter Script"])
+            with t_tab1:
+                st.text(primer_script_txt)
+            with t_tab2:
+                st.text(chapter_script_txt)
+
     subj_label = active_case.get("subject", "General Jurisprudence") or "General Jurisprudence"
     topic_label = active_case.get("topic", "General Topic") or "General Topic"
     gr_label = active_case.get("lookup_key", "")
