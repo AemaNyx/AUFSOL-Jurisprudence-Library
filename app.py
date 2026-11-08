@@ -1827,14 +1827,12 @@ with ctrl_col0:
         st.rerun()
 
 with ctrl_col1:
-    search_input = st.text_input(
+    st.text_input(
         "Universal Lexical Search",
-        value=st.session_state.active_search_query,
+        key="active_search_query",
         placeholder="🔍 Search citations, G.R. numbers, subjects, topics, doctrines, Latin maxims...",
         label_visibility="collapsed",
     )
-    if search_input != st.session_state.active_search_query:
-        st.session_state.active_search_query = search_input
 
 with ctrl_col2:
     mode_options = [
