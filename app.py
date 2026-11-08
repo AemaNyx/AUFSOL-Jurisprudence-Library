@@ -1323,6 +1323,11 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
     div[data-testid="stVerticalBlock"] { gap: .72rem; }
     p, li, label, span, div { font-family: var(--font-ui); }
 
+    /* Remove Streamlit's native sidebar collapse button */
+[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
+}
+
     /* App-controlled drawer: the top-left menu button remains in the main page. */
     section[data-testid="stSidebar"] {
       display: @@SIDEBAR_DISPLAY@@ !important;
