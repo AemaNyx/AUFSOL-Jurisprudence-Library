@@ -15,7 +15,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# --- 2. SESSION STATE INITIALIZATION & SAFE CALLBACKS ---
+hide_complete_header = """
+<style>
+div[data-testid="stToolbar"] { visibility: hidden; height: 0%; position: fixed; }
+div[data-testid="stDecoration"] { visibility: hidden; height: 0%; position: fixed; }
+div[data-testid="stStatusWidget"] { visibility: hidden; height: 0%; position: fixed; }
+header { visibility: hidden; height: 0%; }
+</style>
+"""
+st.markdown(hide_complete_header, unsafe_allow_html=True)
+
+# --- 2. SESSION STATE INITIALIZATION ---
 if "theme_mode" not in st.session_state:
     st.session_state.theme_mode = "Light"
 if "focus_mode" not in st.session_state:
@@ -36,60 +46,6 @@ if "active_search_query" not in st.session_state:
     st.session_state.active_search_query = ""
 if "scroll_to_anchor" not in st.session_state:
     st.session_state.scroll_to_anchor = ""
-
-
-# Pre-instantiation callbacks prevent StreamlitWidgetAlreadyInstantiatedError
-def _cb_clear_search():
-    st.session_state.active_search_query = ""
-
-
-def _cb_open_case_from_search(uid: str, subj: str, top: str):
-    st.session_state.selected_subject = subj or "-- All Subjects --"
-    st.session_state.selected_topic = top or "-- All Topics --"
-    st.session_state.selected_lookup_key = uid
-    st.session_state.active_search_query = ""
-    st.session_state.scroll_to_anchor = "reader-top-anchor"
-
-
-def _cb_select_sidebar_case():
-    chosen = st.session_state.get("_sidebar_case_radio")
-    if chosen:
-        st.session_state.selected_lookup_key = chosen
-        st.session_state.active_search_query = ""
-        st.session_state.scroll_to_anchor = "reader-top-anchor"
-
-
-def _cb_on_subject_change():
-    chosen = st.session_state.get("_sidebar_subj_select")
-    if chosen:
-        st.session_state.selected_subject = chosen
-        st.session_state.selected_topic = "-- All Topics --"
-
-
-def _cb_on_topic_change():
-    chosen = st.session_state.get("_sidebar_top_select")
-    if chosen:
-        st.session_state.selected_topic = chosen
-
-
-def _cb_toggle_cabinet():
-    if st.session_state.focus_mode:
-        st.session_state.focus_mode = False
-        st.session_state.sidebar_hidden = False
-    else:
-        st.session_state.sidebar_hidden = not st.session_state.sidebar_hidden
-
-
-def _cb_toggle_focus():
-    st.session_state.focus_mode = not st.session_state.focus_mode
-
-
-def _cb_toggle_theme():
-    st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
-
-
-def _cb_jump_to_section(anchor_id: str):
-    st.session_state.scroll_to_anchor = anchor_id
 
 
 def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -1152,7 +1108,7 @@ def synthesize_edge_tts_mp3(
         return False, str(exc)
 
 
-# --- 5. THEME, STICKY NAVIGATOR, FLOATING CABINET & RESPONSIVE CSS ---
+# --- 5. THEME, WIDGET CONTRAST & RESPONSIVE CSS INJECTION ---
 def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_scale: str):
     is_dark = theme == "Dark"
 
@@ -1227,7 +1183,7 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         """
     if focus_mode:
         sidebar_visibility_css += """
-        .reader-sheet { max-width: 840px !important; margin: 0 auto !important; }
+        .reader-sheet { max-width: 820px !important; margin: 0 auto !important; }
         """
 
     st.markdown(
@@ -1235,11 +1191,6 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
         html {{ scroll-behavior: smooth; }}
-
-        div[data-testid="stToolbar"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        div[data-testid="stDecoration"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        div[data-testid="stStatusWidget"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        header {{ visibility: hidden; height: 0%; }}
 
         :root {{
 {css_vars}
@@ -1258,74 +1209,9 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         }}
 
         .block-container {{
-            padding-top: 1.0rem !important;
+            padding-top: 1.2rem !important;
             padding-bottom: 4rem !important;
-            max-width: 1460px !important;
-        }}
-
-        /* Ensure parent flex/grid containers allow position: sticky on the Right Navigator column */
-        div[data-testid="stHorizontalBlock"] {{
-            align-items: flex-start !important;
-        }}
-
-        /* Make any column containing #sticky-right-nav-marker follow the user smoothly on scroll */
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
-        div[data-testid="column"]:has(#sticky-right-nav-marker) {{
-            position: sticky !important;
-            top: 1.0rem !important;
-            align-self: flex-start !important;
-            max-height: calc(100vh - 2.0rem) !important;
-            overflow-y: auto !important;
-            padding-right: 0.25rem !important;
-            z-index: 40 !important;
-        }}
-
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar {{
-            width: 5px;
-        }}
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar-thumb {{
-            background-color: var(--border-subtle);
-            border-radius: 4px;
-        }}
-
-        /* Persistent HTML TOC Links inside the Right Sidebar Navigator */
-        .toc-nav-list {{
-            display: flex;
-            flex-direction: column;
-            gap: 0.32rem;
-            margin-top: 0.5rem;
-        }}
-        a.toc-jump-link {{
-            display: flex;
-            align-items: center;
-            gap: 0.55rem;
-            padding: 0.46rem 0.68rem;
-            border-radius: 7px;
-            background-color: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            color: var(--text-primary) !important;
-            text-decoration: none !important;
-            font-family: var(--font-ui);
-            font-size: 0.81rem;
-            font-weight: 600;
-            line-height: 1.25;
-            transition: all 0.14s ease;
-        }}
-        a.toc-jump-link:hover {{
-            background-color: var(--btn-hover-bg);
-            border-color: var(--accent-navy);
-            color: var(--accent-navy) !important;
-            transform: translateX(2px);
-        }}
-        .toc-sec-badge {{
-            background-color: var(--bg-header);
-            color: #FFFFFF !important;
-            font-family: var(--font-mono);
-            font-size: 0.71rem;
-            font-weight: 600;
-            padding: 0.12rem 0.42rem;
-            border-radius: 4px;
-            flex-shrink: 0;
+            max-width: 1440px !important;
         }}
 
         section[data-testid="stSidebar"] {{
@@ -1348,12 +1234,11 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             background-color: var(--btn-bg) !important;
             color: var(--btn-text) !important;
             border: 1px solid var(--btn-border) !important;
-            border-radius: 8px !important;
+            border-radius: 7px !important;
             font-family: var(--font-ui) !important;
             font-weight: 600 !important;
-            font-size: 0.83rem !important;
+            font-size: 0.84rem !important;
             transition: all 0.15s ease !important;
-            min-height: 2.4rem !important;
         }}
         .stButton > button:hover,
         .stPopover > div > button:hover {{
@@ -1370,8 +1255,7 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             background-color: var(--bg-input) !important;
             color: var(--text-primary) !important;
             border-color: var(--btn-border) !important;
-            border-radius: 8px !important;
-            min-height: 2.4rem !important;
+            border-radius: 7px !important;
         }}
         div[data-baseweb="input"] input {{
             color: var(--text-primary) !important;
@@ -1414,9 +1298,9 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         .library-masthead {{
             background-color: var(--bg-header);
             color: #FFFFFF;
-            padding: 1.05rem 1.65rem;
+            padding: 1.15rem 1.75rem;
             border-radius: 10px;
-            margin-bottom: 0.85rem;
+            margin-bottom: 1.15rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
@@ -1426,28 +1310,28 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             box-shadow: var(--shadow-card);
         }}
         .masthead-brand {{ display: flex; align-items: center; gap: 0.85rem; }}
-        .masthead-icon {{ font-size: 1.7rem; line-height: 1; }}
+        .masthead-icon {{ font-size: 1.75rem; line-height: 1; }}
         .masthead-title {{
             font-family: var(--font-serif);
-            font-size: 1.4rem;
+            font-size: 1.45rem;
             font-weight: 700;
             color: #FFFFFF !important;
             margin: 0;
         }}
         .masthead-subtitle {{
             font-family: var(--font-ui);
-            font-size: 0.77rem;
+            font-size: 0.78rem;
             color: #CBD5E1 !important;
             margin: 0;
         }}
-        .masthead-stats {{ display: flex; gap: 0.65rem; align-items: center; flex-wrap: wrap; }}
+        .masthead-stats {{ display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }}
         .stat-pill {{
             background: rgba(255, 255, 255, 0.12);
             border: 1px solid rgba(255, 255, 255, 0.22);
             color: #F8FAFC !important;
             font-family: var(--font-mono);
-            font-size: 0.74rem;
-            padding: 0.28rem 0.65rem;
+            font-size: 0.75rem;
+            padding: 0.3rem 0.7rem;
             border-radius: 6px;
         }}
 
@@ -1455,8 +1339,8 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             background-color: var(--bg-surface);
             border: 1px solid var(--border-subtle);
             border-radius: 10px;
-            padding: 2.6rem 3.1rem;
-            max-width: 820px;
+            padding: 2.75rem 3.25rem;
+            max-width: 780px;
             margin: 0 auto 2rem auto;
             box-shadow: var(--shadow-card);
             color: var(--text-primary);
@@ -1529,7 +1413,7 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         .digest-section-block {{
             margin-top: 2.1rem;
             padding-top: 0.25rem;
-            scroll-margin-top: 28px;
+            scroll-margin-top: 85px;
         }}
         .digest-section-header {{
             display: flex;
@@ -1734,12 +1618,12 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
         }}
         .navigator-title {{
             font-family: var(--font-ui);
-            font-size: 0.81rem;
+            font-size: 0.82rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.05em;
             color: var(--accent-navy);
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.5rem;
             padding-bottom: 0.45rem;
             border-bottom: 2px solid var(--border-subtle);
         }}
@@ -1770,10 +1654,6 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
 
         @media (max-width: 992px) {{
             .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
-            div[data-testid="stColumn"]:has(#sticky-right-nav-marker) {{
-                position: static !important;
-                max-height: none !important;
-            }}
         }}
         @media (max-width: 640px) {{
             .block-container {{ padding-left: 0.75rem !important; padding-right: 0.75rem !important; }}
@@ -1806,11 +1686,7 @@ inject_custom_css(
 
 # --- 7. SIDEBAR: 2-TIER FILING CABINET (SUBJECT -> TOPIC -> CASES) ---
 with st.sidebar:
-    sb_hdr_col1, sb_hdr_col2 = st.columns([3.2, 1.2])
-    with sb_hdr_col1:
-        st.markdown("### 🗄️ Filing Cabinet")
-    with sb_hdr_col2:
-        st.button("◀ Hide", key="sidebar_close_btn", on_click=_cb_toggle_cabinet, use_container_width=True, help="Collapse the Left Filing Cabinet")
+    st.markdown("### 🗄️ Filing Cabinet")
     st.caption("2-Tier Jurisprudence Repository (Subject → Topic)")
 
     if not cases:
@@ -1828,16 +1704,17 @@ with st.sidebar:
                 return f"📚 All Subjects ({len(cases)})"
             return f"🏛️ {opt} ({subj_counts.get(opt, 0)})"
 
-        st.selectbox(
+        chosen_subj = st.selectbox(
             "Tier 1: Subject / Course",
             options=subj_options,
             index=subj_options.index(st.session_state.selected_subject),
             format_func=_fmt_subject,
-            key="_sidebar_subj_select",
-            on_change=_cb_on_subject_change,
         )
+        if chosen_subj != st.session_state.selected_subject:
+            st.session_state.selected_subject = chosen_subj
+            st.session_state.selected_topic = "-- All Topics --"
+            st.rerun()
 
-        chosen_subj = st.session_state.selected_subject
         subj_filtered = cases if chosen_subj == "-- All Subjects --" else [c for c in cases if c.get("subject") == chosen_subj]
 
         # Tier 2: Topic Selector (Scoped to selected Tier 1 Subject)
@@ -1852,16 +1729,14 @@ with st.sidebar:
                 return f"📂 All Topics ({len(subj_filtered)})"
             return f"📁 {opt} ({top_counts.get(opt, 0)})"
 
-        st.selectbox(
+        chosen_top = st.selectbox(
             "Tier 2: Syllabus Topic",
             options=top_options,
             index=top_options.index(st.session_state.selected_topic),
             format_func=_fmt_topic,
-            key="_sidebar_top_select",
-            on_change=_cb_on_topic_change,
         )
+        st.session_state.selected_topic = chosen_top
 
-        chosen_top = st.session_state.selected_topic
         if chosen_top == "-- All Topics --":
             filtered_cases = subj_filtered
         else:
@@ -1887,19 +1762,20 @@ with st.sidebar:
                 c["_uid"]: f"📄 {c.get('citation', 'Untitled Case')}"
                 for c in filtered_cases
             }
-            if st.session_state.selected_lookup_key not in uid_list:
-                st.session_state.selected_lookup_key = uid_list[0]
-            current_idx = uid_list.index(st.session_state.selected_lookup_key)
+            current_idx = uid_list.index(st.session_state.selected_lookup_key) if st.session_state.selected_lookup_key in uid_list else 0
 
-            st.radio(
+            chosen_uid = st.radio(
                 "Select Case to Read",
                 options=uid_list,
                 index=current_idx,
                 format_func=lambda u: uid_to_label.get(u, u),
-                key="_sidebar_case_radio",
-                on_change=_cb_select_sidebar_case,
                 label_visibility="collapsed",
             )
+            if chosen_uid != st.session_state.selected_lookup_key:
+                st.session_state.selected_lookup_key = chosen_uid
+                st.session_state.active_search_query = ""
+                st.session_state.scroll_to_anchor = ""
+                st.rerun()
         else:
             st.info("No cases match that filter.")
 
@@ -1916,7 +1792,7 @@ with st.sidebar:
             st.rerun()
 
 
-# --- 8. TOP INSTITUTIONAL MASTHEAD & REDESIGNED COMMAND BAR ---
+# --- 8. TOP INSTITUTIONAL MASTHEAD & CONTROLS ---
 unique_subjects_count = len({c.get("subject", "General Jurisprudence") for c in cases})
 unique_topics_count = len({c.get("topic", "General Topic") for c in cases})
 masthead_html = (
@@ -1937,25 +1813,20 @@ masthead_html = (
 )
 st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Redesigned Top Command Bar:
-# [1] Persistent Cabinet Toggle | [2] Universal Search Bar | [3] Clear Search | [4] Study Persona | [5] Text Scale | [6] Focus Mode | [7] Theme Toggle
-is_cabinet_closed = st.session_state.sidebar_hidden or st.session_state.focus_mode
-cab_btn_text = "🗄️ Show Cabinet" if is_cabinet_closed else "🗄️ Hide Cabinet"
+# Top Control Strip: Left Sidebar Toggle | Search Bar | Study Persona | Text Size | Focus Mode | Light/Dark Mode
+ctrl_col0, ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4, ctrl_col5 = st.columns([1.05, 2.65, 1.85, 1.25, 0.95, 0.95], gap="small")
 
-cmd_c1, cmd_c2, cmd_c3, cmd_c4, cmd_c5, cmd_c6, cmd_c7 = st.columns(
-    [1.25, 3.0, 0.55, 1.75, 1.25, 1.0, 0.95], gap="small"
-)
+with ctrl_col0:
+    sb_label = "📂 Show Cabinet" if (st.session_state.sidebar_hidden or st.session_state.focus_mode) else "📂 Hide Cabinet"
+    if st.button(sb_label, use_container_width=True, help="Toggle the Left Filing Cabinet sidebar on or off"):
+        if st.session_state.focus_mode:
+            st.session_state.focus_mode = False
+            st.session_state.sidebar_hidden = False
+        else:
+            st.session_state.sidebar_hidden = not st.session_state.sidebar_hidden
+        st.rerun()
 
-with cmd_c1:
-    st.button(
-        cab_btn_text,
-        key="top_cabinet_toggle_btn",
-        on_click=_cb_toggle_cabinet,
-        use_container_width=True,
-        help="Show or hide the Left Filing Cabinet sidebar",
-    )
-
-with cmd_c2:
+with ctrl_col1:
     st.text_input(
         "Universal Lexical Search",
         key="active_search_query",
@@ -1963,17 +1834,7 @@ with cmd_c2:
         label_visibility="collapsed",
     )
 
-with cmd_c3:
-    st.button(
-        "✖",
-        key="top_clear_search_btn",
-        on_click=_cb_clear_search,
-        disabled=not bool(st.session_state.active_search_query.strip()),
-        use_container_width=True,
-        help="Clear active search query",
-    )
-
-with cmd_c4:
+with ctrl_col2:
     mode_options = [
         "📖 First-Time Read",
         "⚡ Exam & Recit Review",
@@ -1990,38 +1851,30 @@ with cmd_c4:
         st.session_state.study_mode = selected_mode
         st.rerun()
 
-with cmd_c5:
+with ctrl_col3:
     size_options = ["Compact", "Standard", "Comfortable"]
     top_font_choice = st.selectbox(
         "Text Size",
         options=size_options,
         index=size_options.index(st.session_state.font_scale),
-        format_func=lambda s: f"🔤 {s}",
+        format_func=lambda s: f"🔤 Text: {s}",
         label_visibility="collapsed",
     )
     if top_font_choice != st.session_state.font_scale:
         st.session_state.font_scale = top_font_choice
         st.rerun()
 
-with cmd_c6:
+with ctrl_col4:
     focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus"
-    st.button(
-        focus_btn_label,
-        key="top_focus_toggle_btn",
-        on_click=_cb_toggle_focus,
-        use_container_width=True,
-        help="Hide both sidebars and center the legal document",
-    )
+    if st.button(focus_btn_label, use_container_width=True, help="Hide both sidebars and center the legal document"):
+        st.session_state.focus_mode = not st.session_state.focus_mode
+        st.rerun()
 
-with cmd_c7:
+with ctrl_col5:
     theme_btn_label = "☀️ Light" if st.session_state.theme_mode == "Dark" else "🌙 Dark"
-    st.button(
-        theme_btn_label,
-        key="top_theme_toggle_btn",
-        on_click=_cb_toggle_theme,
-        use_container_width=True,
-        help="Switch between Light Mode and Dark Mode",
-    )
+    if st.button(theme_btn_label, use_container_width=True, help="Toggle between Light Mode and Dark Mode"):
+        st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
+        st.rerun()
 
 
 # --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
@@ -2044,16 +1897,13 @@ if query_str and bm25 and cases:
 
     ranked_pairs.sort(key=lambda x: x[1], reverse=True)
 
-    res_hdr_col1, res_hdr_col2 = st.columns([4.2, 1.0])
+    res_hdr_col1, res_hdr_col2 = st.columns([4, 1])
     with res_hdr_col1:
         st.markdown(f"#### 🔎 Lexical Search Results for *'{html.escape(query_str)}'* ({len(ranked_pairs)} matching cases)")
     with res_hdr_col2:
-        st.button(
-            "✖ Clear Search",
-            key="results_clear_search_btn",
-            on_click=_cb_clear_search,
-            use_container_width=True,
-        )
+        if st.button("✖ Clear Search", use_container_width=True):
+            st.session_state.active_search_query = ""
+            st.rerun()
 
     if not ranked_pairs:
         st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
@@ -2078,19 +1928,14 @@ if query_str and bm25 and cases:
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-            btn_c1, btn_c2, _ = st.columns([1.5, 2.0, 4.5])
+            btn_c1, btn_c2, _ = st.columns([1.4, 2.0, 4.6])
             with btn_c1:
-                st.button(
-                    "📖 Open Case Digest",
-                    key=f"open_search_{match_case['_uid']}",
-                    on_click=_cb_open_case_from_search,
-                    args=(
-                        match_case["_uid"],
-                        match_case.get("subject", "-- All Subjects --"),
-                        match_case.get("topic", "-- All Topics --"),
-                    ),
-                    use_container_width=True,
-                )
+                if st.button("📖 Open Case Digest", key=f"open_search_{match_case['_uid']}", use_container_width=True):
+                    st.session_state.selected_subject = match_case.get("subject", "-- All Subjects --")
+                    st.session_state.selected_topic = match_case.get("topic", "-- All Topics --")
+                    st.session_state.selected_lookup_key = match_case["_uid"]
+                    st.session_state.active_search_query = ""
+                    st.rerun()
             with btn_c2:
                 if quote_preview:
                     with st.popover("📋 Copy Citation & Holding"):
@@ -2101,7 +1946,7 @@ if query_str and bm25 and cases:
     st.stop()
 
 
-# --- 10. MAIN CASE READER & PERSISTENT RIGHT SIDEBAR NAVIGATOR ---
+# --- 10. MAIN CASE READER & PERSONA WORKFLOWS ---
 if not cases:
     st.info("👈 Add `master_library.jsonl` to `case_library/` to browse and read your digested jurisprudence.")
     st.stop()
@@ -2135,7 +1980,7 @@ with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)"
         )
         if mob_uid != active_case["_uid"]:
             st.session_state.selected_lookup_key = mob_uid
-            st.session_state.scroll_to_anchor = "reader-top-anchor"
+            st.session_state.scroll_to_anchor = ""
             st.rerun()
     with m_col2:
         if sections:
@@ -2149,32 +1994,22 @@ if st.session_state.focus_mode:
     reader_container = st.container()
     nav_container = None
 else:
-    reader_container, nav_container = st.columns([3.25, 1.15], gap="large")
+    reader_container, nav_container = st.columns([3.3, 1.15], gap="large")
 
 
-# --- 10B. PERSISTENT STICKY RIGHT SIDEBAR: STUDY NAVIGATOR ---
+# --- 10B. RIGHT SIDEBAR: STUDY NAVIGATOR ---
 if nav_container is not None:
     with nav_container:
-        # Marker id '#sticky-right-nav-marker' activates CSS position: sticky on this entire column
-        toc_links_html = "".join(
-            f"<a class='toc-jump-link' href='#{html.escape(sec['anchor'])}' target='_self'>"
-            f"<span class='toc-sec-badge'>{html.escape(sec['num'])}</span>"
-            f"<span>{html.escape(sec['short_title'][:36] + ('...' if len(sec['short_title']) > 36 else ''))}</span>"
-            f"</a>"
-            for sec in sections
-        )
-        top_jump_html = (
-            "<a class='toc-jump-link' href='#reader-top-anchor' target='_self' style='margin-top:0.35rem; opacity:0.85;'>"
-            "<span class='toc-sec-badge'>↑</span><span>Back to Top of Case</span></a>"
-        )
         st.markdown(
-            "<div id='sticky-right-nav-marker'></div>"
-            "<div class='navigator-card'>"
-            "<div class='navigator-title'>🧭 On This Case (Click to Jump)</div>"
-            f"<div class='toc-nav-list'>{toc_links_html}{top_jump_html}</div>"
-            "</div>",
+            "<div class='navigator-card'><div class='navigator-title'>🧭 On This Case (Click to Jump)</div></div>",
             unsafe_allow_html=True,
         )
+        for sec in sections:
+            btn_lbl = f"{sec['num']}. {sec['short_title'][:32] + ('...' if len(sec['short_title']) > 32 else '')}"
+            if st.button(btn_lbl, key=f"nav_btn_{sec['anchor']}", use_container_width=True):
+                st.session_state.scroll_to_anchor = sec["anchor"]
+
+        st.markdown("<div style='height: 0.75rem;'></div>", unsafe_allow_html=True)
 
         with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
             st.caption("Test your recall before looking at the holding:")
@@ -2197,8 +2032,6 @@ if nav_container is not None:
 
 # --- 10A. CENTRAL READING PANE ---
 with reader_container:
-    st.markdown("<div id='reader-top-anchor'></div>", unsafe_allow_html=True)
-
     # --- BUILT-IN DUAL AUDIO BRIEFING PLAYER (en-US-AndrewMultilingualNeural) ---
     primer_mp3_path, chapter_mp3_path = get_audio_file_paths(active_case)
     primer_script_txt, chapter_script_txt = build_audio_scripts_for_case(active_case)
@@ -2330,80 +2163,22 @@ with reader_container:
     )
     st.markdown(reader_html, unsafe_allow_html=True)
 
-# Execute smooth JavaScript scroll & persistent floating Left Cabinet pill in parent DOM
-scroll_target_id = st.session_state.scroll_to_anchor
-st.session_state.scroll_to_anchor = ""
-
-components.html(
-    f"""
-    <script>
-    (function() {{
-        const parentDoc = window.parent.document;
-
-        // 1. Handle programmatic smooth scroll if triggered by mobile dropdown or case switch
-        const targetId = {json.dumps(scroll_target_id)};
-        if (targetId) {{
+# Execute smooth JavaScript scroll into view in parent DOM when a section button is clicked
+if st.session_state.scroll_to_anchor:
+    target_id = st.session_state.scroll_to_anchor
+    components.html(
+        f"""
+        <script>
+        (function() {{
+            const targetId = {json.dumps(target_id)};
+            const parentDoc = window.parent.document;
             const el = parentDoc.getElementById(targetId);
             if (el) {{
                 el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
             }}
-        }}
-
-        // 2. Bind smooth scrolling to all Right Navigator HTML anchor links
-        const tocLinks = parentDoc.querySelectorAll('a.toc-jump-link');
-        tocLinks.forEach(link => {{
-            if (!link.dataset.boundSmooth) {{
-                link.dataset.boundSmooth = 'true';
-                link.addEventListener('click', function(e) {{
-                    const href = this.getAttribute('href');
-                    if (href && href.startsWith('#')) {{
-                        const target = parentDoc.getElementById(href.substring(1));
-                        if (target) {{
-                            e.preventDefault();
-                            target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                        }}
-                    }}
-                }});
-            }}
-        }});
-
-        // 3. Create or update persistent floating Left Sidebar toggle pill (bottom-left corner)
-        let floatBtn = parentDoc.getElementById('persistent-cabinet-fab');
-        if (!floatBtn) {{
-            floatBtn = parentDoc.createElement('button');
-            floatBtn.id = 'persistent-cabinet-fab';
-            parentDoc.body.appendChild(floatBtn);
-        }}
-        const isClosed = {json.dumps(is_cabinet_closed)};
-        const isDark = {json.dumps(st.session_state.theme_mode == "Dark")};
-        floatBtn.innerText = isClosed ? '🗄️ Open Filing Cabinet' : '◀ Hide Cabinet';
-        floatBtn.title = 'Click to show or hide the Left Filing Cabinet sidebar anywhere on the page';
-        Object.assign(floatBtn.style, {{
-            position: 'fixed',
-            bottom: '22px',
-            left: '22px',
-            zIndex: '99999',
-            padding: '9px 15px',
-            borderRadius: '999px',
-            backgroundColor: isDark ? '#1E293B' : '#172C3F',
-            color: '#FFFFFF',
-            border: '2px solid #C6A66A',
-            fontFamily: "'Inter', sans-serif",
-            fontWeight: '600',
-            fontSize: '13px',
-            cursor: 'pointer',
-            boxShadow: '0 4px 14px rgba(0,0,0,0.28)',
-            transition: 'all 0.15s ease'
-        }});
-        floatBtn.onclick = function() {{
-            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-            const topToggle = buttons.find(b => b.innerText.includes('Show Cabinet') || b.innerText.includes('Hide Cabinet'));
-            if (topToggle) {{
-                topToggle.click();
-            }}
-        }};
-    }})();
-    </script>
-    """,
-    height=0,
-)
+        }})();
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state.scroll_to_anchor = ""
