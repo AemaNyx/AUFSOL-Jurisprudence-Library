@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 import streamlit as st
-import streamlit.components.v1 as components
 from rank_bm25 import BM25Okapi
 
 APP_DIR = Path(__file__).resolve().parent
@@ -13,7 +12,7 @@ APP_DIR = Path(__file__).resolve().parent
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="Philippine Jurisprudence Library",
-    page_icon="⚖️",
+    page_icon="⚖",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -22,6 +21,7 @@ st.set_page_config(
 _DEFAULT_STATE = {
     "theme_mode": "Light",
     "focus_mode": False,
+    "cabinet_open": True,
     "study_mode": "📖 First-Time Read",
     "font_scale": "Standard",
     "selected_lookup_key": None,
@@ -75,6 +75,11 @@ def _cb_on_topic_change():
     chosen = st.session_state.get("_sidebar_top_select")
     if chosen:
         st.session_state.selected_topic = chosen
+
+
+def _cb_toggle_cabinet():
+    """Toggle the left filing cabinet using an app-owned, always-visible control."""
+    st.session_state.cabinet_open = not st.session_state.get("cabinet_open", True)
 
 
 def _cb_cycle_view_mode():
@@ -1219,702 +1224,450 @@ def render_audio_briefing(
 
 
 # --- 5. THEME, STICKY NAVIGATOR & RESPONSIVE CSS ---
-def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
+def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_open: bool = True):
+    """Apply the editorial paper-and-ink design system to the Streamlit UI."""
     is_dark = theme == "Dark"
-
     scale_map = {
-        "Compact": ("15.5px", "26px", "18.5px"),
-        "Standard": ("17.5px", "31px", "20.5px"),
-        "Comfortable": ("20px", "35px", "23px"),
+        "Compact": ("15.5px", "39px", "23px"),
+        "Standard": ("17px", "46px", "25px"),
+        "Comfortable": ("18.5px", "50px", "27px"),
     }
-    body_px, title_px, h3_px = scale_map.get(font_scale, ("17.5px", "31px", "20.5px"))
+    body_px, title_px, h3_px = scale_map.get(font_scale, ("17px", "46px", "25px"))
 
     if is_dark:
         colors = {
-            "--bg-app": "#0F172A",
-            "--bg-surface": "#1E293B",
-            "--bg-elevated": "#263349",
-            "--bg-sidebar": "#131C2E",
-            "--bg-header": "#0B1120",
-            "--bg-input": "#1E293B",
-            "--text-primary": "#F1F5F9",
-            "--text-secondary": "#CBD5E1",
-            "--text-muted": "#94A3B8",
-            "--accent-navy": "#93C5FD",
-            "--accent-primary": "#60A5FA",
-            "--accent-sage": "#5EEAD4",
-            "--accent-gold": "#EAB308",
-            "--border-subtle": "#334155",
-            "--callout-blue-bg": "rgba(59, 130, 246, 0.15)",
-            "--callout-green-bg": "rgba(20, 184, 166, 0.14)",
-            "--callout-gold-bg": "rgba(234, 179, 8, 0.15)",
-            "--mark-bg": "rgba(250, 204, 21, 0.35)",
-            "--mark-text": "#FEF08A",
-            "--btn-bg": "#1E293B",
-            "--btn-text": "#F8FAFC",
-            "--btn-border": "#475569",
-            "--btn-hover-bg": "#334155",
-            "--shadow-card": "0 8px 24px rgba(0, 0, 0, 0.38)",
+            "BG_APP": "#141314",
+            "BG_SIDEBAR": "#1D1B19",
+            "BG_SURFACE": "#201F1C",
+            "BG_ELEVATED": "#292722",
+            "BG_INPUT": "#201F1C",
+            "TEXT_PRIMARY": "#FCFCFD",
+            "TEXT_SECONDARY": "#E1DED7",
+            "TEXT_MUTED": "#B1ACA2",
+            "TEXT_INVERSE": "#141314",
+            "ACCENT": "#FFC61A",
+            "ACCENT_SOFT": "rgba(255,198,26,.16)",
+            "BORDER": "#49453D",
+            "BUTTON_BG": "#F5F4F0",
+            "BUTTON_TEXT": "#141314",
+            "BUTTON_HOVER": "#E7E3D9",
+            "CALLOUT": "#29261E",
+            "SHADOW": "0 8px 26px rgba(0,0,0,.24)",
+            "RADIO_HOVER": "#2A2823",
         }
     else:
         colors = {
-            "--bg-app": "#F6F5F1",
-            "--bg-surface": "#FFFFFF",
-            "--bg-elevated": "#F9F8F5",
-            "--bg-sidebar": "#F0F1EF",
-            "--bg-header": "#172C3F",
-            "--bg-input": "#FFFFFF",
-            "--text-primary": "#25313B",
-            "--text-secondary": "#334155",
-            "--text-muted": "#64748B",
-            "--accent-navy": "#172C3F",
-            "--accent-primary": "#1E3A5F",
-            "--accent-sage": "#56716D",
-            "--accent-gold": "#C6A66A",
-            "--border-subtle": "#DCE0E5",
-            "--callout-blue-bg": "#EAF1F8",
-            "--callout-green-bg": "#EAF3EE",
-            "--callout-gold-bg": "#F7F0E5",
-            "--mark-bg": "#FEF08A",
-            "--mark-text": "#172C3F",
-            "--btn-bg": "#FFFFFF",
-            "--btn-text": "#172C3F",
-            "--btn-border": "#CBD5E1",
-            "--btn-hover-bg": "#EAF1F8",
-            "--shadow-card": "0 2px 12px rgba(23, 44, 63, 0.06)",
+            "BG_APP": "#F5F4F0",
+            "BG_SIDEBAR": "#ECEBE8",
+            "BG_SURFACE": "#FFFEFA",
+            "BG_ELEVATED": "#ECEBE8",
+            "BG_INPUT": "#FFFEFA",
+            "TEXT_PRIMARY": "#000000",
+            "TEXT_SECONDARY": "#373737",
+            "TEXT_MUTED": "#505050",
+            "TEXT_INVERSE": "#FCFCFD",
+            "ACCENT": "#FFC61A",
+            "ACCENT_SOFT": "#FFF1C2",
+            "BORDER": "#D6D5D2",
+            "BUTTON_BG": "#131313",
+            "BUTTON_TEXT": "#FCFCFD",
+            "BUTTON_HOVER": "#373737",
+            "CALLOUT": "#F3F0E7",
+            "SHADOW": "0 4px 18px rgba(20,19,20,.055)",
+            "RADIO_HOVER": "#E4E2DC",
         }
 
-    css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
+    css = r"""
+    @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;500;600;700&family=Host+Grotesk:wght@400;500;600;700&display=swap');
 
-    # Focus mode changes the reading canvas only. Sidebar visibility is managed
-    # by Streamlit's native sidebar state through the persistent floating toggle;
-    # do not use display:none on the sidebar because that breaks its native state.
-    focus_reading_css = ""
-    if focus_mode:
-        focus_reading_css = """
-        .reader-sheet { max-width: 840px !important; margin: 0 auto !important; }
-        """
+    :root {
+      --bg-app: @@BG_APP@@;
+      --bg-sidebar: @@BG_SIDEBAR@@;
+      --bg-surface: @@BG_SURFACE@@;
+      --bg-elevated: @@BG_ELEVATED@@;
+      --bg-input: @@BG_INPUT@@;
+      --text-primary: @@TEXT_PRIMARY@@;
+      --text-secondary: @@TEXT_SECONDARY@@;
+      --text-muted: @@TEXT_MUTED@@;
+      --text-inverse: @@TEXT_INVERSE@@;
+      --accent: @@ACCENT@@;
+      --accent-soft: @@ACCENT_SOFT@@;
+      --border: @@BORDER@@;
+      --button-bg: @@BUTTON_BG@@;
+      --button-text: @@BUTTON_TEXT@@;
+      --button-hover: @@BUTTON_HOVER@@;
+      --callout: @@CALLOUT@@;
+      --shadow: @@SHADOW@@;
+      --radio-hover: @@RADIO_HOVER@@;
+      --font-ui: 'Host Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-display: 'EB Garamond', Georgia, serif;
+      --body-size: @@BODY_SIZE@@;
+      --title-size: @@TITLE_SIZE@@;
+      --heading-size: @@H3_SIZE@@;
+    }
 
-    st.markdown(
-        f"""<style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
+    html { scroll-behavior: smooth; }
+    body, .stApp, [data-testid="stAppViewContainer"] {
+      background: var(--bg-app) !important;
+      color: var(--text-primary) !important;
+      font-family: var(--font-ui) !important;
+    }
+    header[data-testid="stHeader"] { display:none !important; }
+    div[data-testid="stToolbar"], div[data-testid="stDecoration"],
+    div[data-testid="stStatusWidget"] { display:none !important; }
+    .block-container {
+      max-width: 1600px !important;
+      padding: 1.4rem 2rem 5rem !important;
+    }
+    div[data-testid="stHorizontalBlock"] { gap: 1rem; align-items: flex-start; }
+    div[data-testid="stVerticalBlock"] { gap: .72rem; }
+    p, li, label, span, div { font-family: var(--font-ui); }
 
-        html {{ scroll-behavior: smooth; }}
+    /* App-controlled drawer: the top-left menu button remains in the main page. */
+    section[data-testid="stSidebar"] {
+      display: @@SIDEBAR_DISPLAY@@ !important;
+      width: 292px !important;
+      min-width: 292px !important;
+      max-width: 292px !important;
+      flex: 0 0 292px !important;
+      background: var(--bg-sidebar) !important;
+      border-right: 1px solid var(--border) !important;
+      padding-top: .8rem !important;
+    }
+    section[data-testid="stSidebar"] > div {
+      background: var(--bg-sidebar) !important;
+      overflow-y: auto !important;
+    }
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] span,
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] h4 { color: var(--text-primary) !important; }
+    section[data-testid="stSidebar"] h3 {
+      font-family: var(--font-display) !important;
+      font-size: 1.75rem !important;
+      font-weight: 600 !important;
+      letter-spacing: -.02em;
+      margin-bottom: .1rem !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stSelectbox"] label {
+      font-size: .72rem !important;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--text-muted) !important;
+      font-weight: 700 !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] { gap: .16rem !important; }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label {
+      width: 100% !important;
+      align-items: flex-start !important;
+      padding: .48rem .52rem !important;
+      border-radius: 7px !important;
+      border: 1px solid transparent !important;
+      line-height: 1.35 !important;
+      transition: background .12s ease, border-color .12s ease;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+      background: var(--radio-hover) !important;
+      border-color: var(--border) !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+      background: var(--accent-soft) !important;
+      border-color: color-mix(in srgb, var(--accent) 55%, var(--border)) !important;
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] input { accent-color: #C99500 !important; }
 
-        /* Keep Streamlit's header alive: it contains the native sidebar controls. */
-        header[data-testid="stHeader"] {{
-            visibility: visible !important;
-            height: 2.875rem !important;
-            background: transparent !important;
-            border-bottom: 0 !important;
-        }}
-        div[data-testid="stToolbar"] {{
-            visibility: visible !important;
-            height: auto !important;
-            position: relative !important;
-            background: transparent !important;
-        }}
-        div[data-testid="stDecoration"] {{ display: none !important; }}
-        div[data-testid="stStatusWidget"] {{ display: none !important; }}
+    /* Unified controls and keyboard focus. */
+    .stButton > button, .stPopover > div > button {
+      min-height: 2.45rem !important;
+      border-radius: 8px !important;
+      border: 1px solid var(--border) !important;
+      background: var(--bg-surface) !important;
+      color: var(--text-primary) !important;
+      font-family: var(--font-ui) !important;
+      font-size: .84rem !important;
+      font-weight: 600 !important;
+      transition: background .14s ease, border-color .14s ease, transform .14s ease;
+      box-shadow: none !important;
+    }
+    .stButton > button:hover, .stPopover > div > button:hover {
+      background: var(--button-hover) !important;
+      color: var(--text-primary) !important;
+      border-color: var(--text-primary) !important;
+    }
+    .stButton > button:focus-visible, .stPopover > div > button:focus-visible,
+    input:focus-visible, textarea:focus-visible, a:focus-visible {
+      outline: 3px solid var(--accent) !important;
+      outline-offset: 2px !important;
+    }
+    .stButton > button p, .stButton > button span { color: inherit !important; }
+    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div,
+    div[data-baseweb="textarea"] > div {
+      background: var(--bg-input) !important;
+      color: var(--text-primary) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 8px !important;
+      min-height: 2.45rem !important;
+    }
+    div[data-baseweb="input"] input, div[data-baseweb="textarea"] textarea {
+      color: var(--text-primary) !important;
+      -webkit-text-fill-color: var(--text-primary) !important;
+      font-family: var(--font-ui) !important;
+    }
+    div[data-baseweb="input"] input::placeholder {
+      color: var(--text-muted) !important;
+      -webkit-text-fill-color: var(--text-muted) !important;
+      opacity: 1 !important;
+    }
+    div[data-baseweb="select"] span, div[data-baseweb="select"] div { color: var(--text-primary) !important; }
+    ul[data-baseweb="menu"], div[data-baseweb="popover"], li[role="option"] {
+      background: var(--bg-surface) !important;
+      color: var(--text-primary) !important;
+    }
+    div[data-testid="stExpander"] {
+      border: 1px solid var(--border) !important;
+      border-radius: 8px !important;
+      background: var(--bg-surface) !important;
+    }
+    div[data-testid="stExpander"] summary { font-weight: 600 !important; }
+    div[data-testid="stExpander"] summary, div[data-testid="stExpander"] p,
+    div[data-testid="stExpander"] span { color: var(--text-primary) !important; }
+    hr { border-color: var(--border) !important; }
 
-        /* Stable, ChatGPT-style floating drawer toggle (the only app iframe). */
-        div[data-testid="stIFrame"],
-        div[data-testid="stCustomComponentV1"] {{
-            position: fixed !important;
-            top: 0.45rem !important;
-            left: 0.55rem !important;
-            width: 46px !important;
-            height: 46px !important;
-            min-width: 46px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            z-index: 1000000 !important;
-            pointer-events: auto !important;
-        }}
-        div[data-testid="stIFrame"] iframe,
-        div[data-testid="stCustomComponentV1"] iframe {{
-            width: 46px !important;
-            height: 46px !important;
-            border: 0 !important;
-            overflow: hidden !important;
-        }}
+    /* Masthead: quiet brand row, editorial type, compact evidence metrics. */
+    .masthead-brand { display:flex; align-items:center; gap:.85rem; min-width:0; }
+    .masthead-icon {
+      width:46px; height:46px; display:grid; place-items:center;
+      border:1px solid var(--text-primary); border-radius:50%;
+      font-size:1.45rem; flex:none; color:var(--text-primary);
+    }
+    .masthead-title {
+      font-family:var(--font-display) !important; font-size:2rem;
+      font-weight:600; line-height:.98; letter-spacing:-.025em;
+      color:var(--text-primary) !important; margin:0;
+    }
+    .masthead-subtitle {
+      font-family:var(--font-ui) !important; font-size:.68rem;
+      text-transform:uppercase; letter-spacing:.13em; color:var(--text-muted) !important;
+      margin-top:.35rem;
+    }
+    .masthead-stats { display:flex; justify-content:flex-end; gap:1.15rem; align-items:center; flex-wrap:wrap; }
+    .stat-item { border-left:1px solid var(--border); padding-left:.8rem; min-width:70px; }
+    .stat-value { display:block; font-family:var(--font-display) !important; font-size:1.55rem; line-height:1; font-weight:600; color:var(--text-primary) !important; }
+    .stat-label { display:block; font-family:var(--font-ui) !important; font-size:.62rem; letter-spacing:.09em; text-transform:uppercase; color:var(--text-muted) !important; margin-top:.28rem; }
+    div[data-testid="stHorizontalBlock"]:has(.masthead-brand) div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
+    div[data-testid="stHorizontalBlock"]:has(.masthead-brand) div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
+      width:44px !important; min-width:44px !important; height:44px !important;
+      padding:0 !important; font-size:1.18rem !important;
+      background:var(--bg-surface) !important; border:1px solid var(--border) !important;
+    }
 
-        /* Make both native states remain available as a fallback. */
-        [data-testid="stSidebarCollapseButton"],
-        [data-testid="collapsedControl"],
-        [data-testid="stExpandSidebarButton"] {{
-            pointer-events: auto !important;
-        }}
+    /* Search bar and task controls. */
+    .command-label {
+      font-family:var(--font-ui); color:var(--text-muted); font-size:.64rem;
+      text-transform:uppercase; letter-spacing:.1em; font-weight:700;
+      margin:0 0 .35rem .05rem;
+    }
+    .workspace-rule { border-bottom:1px solid var(--border); margin:.15rem 0 1rem; }
 
-        :root {{
-{css_vars}
-            --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            --font-serif: 'Source Serif 4', Georgia, Cambria, serif;
-            --font-mono: 'IBM Plex Mono', monospace;
-            --body-size: {body_px};
-            --title-size: {title_px};
-            --h3-size: {h3_px};
-        }}
+    /* Search result cards. */
+    .search-heading {
+      font-family:var(--font-display) !important; font-size:2rem;
+      font-weight:600; line-height:1.05; color:var(--text-primary) !important;
+      margin:.35rem 0 .15rem;
+    }
+    .search-card {
+      background:var(--bg-surface); border:1px solid var(--border);
+      border-radius:8px; padding:1.1rem 1.25rem; margin:.65rem 0;
+      box-shadow:var(--shadow); border-left:3px solid var(--accent);
+    }
+    .search-card-title {
+      font-family:var(--font-display) !important; font-size:1.42rem;
+      font-weight:600; line-height:1.12; color:var(--text-primary) !important;
+      margin:.2rem 0 .5rem;
+    }
+    .search-snippet {
+      font-family:var(--font-ui) !important; font-size:.92rem;
+      line-height:1.6; color:var(--text-secondary) !important;
+    }
+    .search-meta-row { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin-bottom:.25rem; }
+    .search-meta-chip {
+      background:var(--bg-elevated); border:1px solid var(--border);
+      color:var(--text-muted) !important; border-radius:4px;
+      padding:.16rem .45rem; font:500 .65rem var(--font-ui);
+    }
 
-        .stApp {{
-            background-color: var(--bg-app) !important;
-            color: var(--text-primary) !important;
-            font-family: var(--font-ui) !important;
-        }}
+    /* Document surface and legal reading hierarchy. */
+    .reader-sheet {
+      background:var(--bg-surface); border:1px solid var(--border);
+      border-radius:9px; padding:2.25rem 2.55rem 3.5rem;
+      max-width:1020px; margin:0 auto 2rem;
+      box-shadow:var(--shadow); color:var(--text-primary);
+    }
+    .reader-eyebrow {
+      color:var(--text-muted); font:700 .65rem var(--font-ui);
+      text-transform:uppercase; letter-spacing:.14em; margin:.1rem 0 .45rem;
+    }
+    .breadcrumb-bar {
+      display:flex; flex-wrap:wrap; align-items:center; gap:.4rem;
+      margin-bottom:.75rem; color:var(--text-muted);
+    }
+    .subj-badge, .cat-badge, .gr-badge {
+      display:inline-flex; align-items:center; padding:.23rem .55rem;
+      border:1px solid var(--border); border-radius:5px;
+      background:var(--bg-elevated); color:var(--text-secondary) !important;
+      font-family:var(--font-ui); font-size:.68rem; font-weight:600;
+    }
+    .gr-badge { font-variant-numeric:tabular-nums; }
+    .reader-sheet h1.case-main-title {
+      font-family:var(--font-display) !important; font-size:var(--title-size) !important;
+      font-weight:600 !important; line-height:.99 !important;
+      letter-spacing:-.025em !important; color:var(--text-primary) !important;
+      margin:.45rem 0 .65rem !important;
+    }
+    .case-meta-row {
+      display:flex; align-items:center; flex-wrap:wrap; gap:.65rem;
+      color:var(--text-muted); font:500 .77rem var(--font-ui);
+      padding-bottom:1.05rem; margin-bottom:1.3rem;
+      border-bottom:1px solid var(--border);
+    }
+    .source-link { color:var(--text-primary) !important; font-weight:600; text-decoration:underline; text-decoration-color:var(--accent); text-underline-offset:3px; }
+    .source-link:hover { color:var(--text-secondary) !important; }
+    .digest-section-block { margin-top:2.1rem; padding-top:.1rem; scroll-margin-top:24px; }
+    .digest-section-block:first-child { margin-top:0; }
+    .digest-section-header {
+      display:flex; align-items:baseline; gap:.75rem;
+      border-bottom:1px solid var(--border); padding-bottom:.52rem; margin-bottom:1rem;
+    }
+    .sec-num-badge {
+      color:var(--text-muted) !important; font:600 .73rem var(--font-ui);
+      letter-spacing:.08em; flex:none;
+    }
+    .reader-sheet h3.sec-heading-text {
+      font-family:var(--font-display) !important; font-size:var(--heading-size) !important;
+      font-weight:600 !important; line-height:1.12 !important;
+      color:var(--text-primary) !important; margin:0 !important;
+    }
+    .reader-sheet .legal-prose, .reader-sheet .digest-p,
+    .reader-sheet .timeline-event, .reader-sheet .num-content,
+    .reader-sheet .trigger-text, .reader-sheet .fallo-text,
+    .reader-sheet .quote-callout-body, .reader-sheet .recit-callout {
+      font-family:var(--font-ui) !important; font-size:var(--body-size) !important;
+      line-height:1.76 !important; color:var(--text-secondary) !important;
+      text-align:left !important; max-width:76ch;
+    }
+    .digest-p { margin:0 0 1rem 0 !important; }
+    .inline-lead { font-family:var(--font-ui) !important; font-weight:700 !important; color:var(--text-primary) !important; }
+    .digest-subheading { font-family:var(--font-ui) !important; font-size:1.02rem !important; font-weight:700 !important; color:var(--text-primary) !important; margin:1.35rem 0 .55rem !important; }
+    .party-header {
+      font-family:var(--font-ui) !important; font-size:.9rem !important;
+      font-weight:700 !important; color:var(--text-primary) !important;
+      background:var(--bg-elevated); border-left:3px solid var(--accent);
+      padding:.55rem .85rem; margin:1.1rem 0 .7rem; border-radius:0 6px 6px 0;
+    }
+    .trigger-box, .quote-callout, .legal-blockquote, .recit-callout,
+    .issue-verdict-banner, .fallo-box {
+      background:var(--callout); border:1px solid var(--border);
+      border-left:3px solid var(--accent); border-radius:0 7px 7px 0;
+      padding:.95rem 1.15rem; margin:1rem 0 1.25rem;
+    }
+    .trigger-title, .quote-callout-label, .fallo-title {
+      font-family:var(--font-ui) !important; font-size:.7rem !important;
+      font-weight:700 !important; letter-spacing:.09em; text-transform:uppercase;
+      color:var(--text-muted) !important; margin-bottom:.35rem;
+    }
+    .recit-label, .verdict-tag { font-family:var(--font-ui) !important; font-weight:700 !important; color:var(--text-primary) !important; }
+    .timeline-row { display:grid; grid-template-columns:145px 1fr; gap:1rem; padding:.7rem 0; border-bottom:1px solid var(--border); align-items:baseline; }
+    .timeline-date { font:700 .83rem var(--font-ui) !important; color:var(--text-primary) !important; }
+    .numbered-item { display:flex; gap:.75rem; align-items:flex-start; margin-bottom:.85rem; }
+    .num-circle { font:600 .75rem var(--font-ui) !important; color:var(--text-primary) !important; background:var(--accent-soft); padding:.15rem .45rem; border-radius:4px; flex:none; margin-top:.12rem; }
+    .issue-pill { font:700 .67rem var(--font-ui) !important; padding:.14rem .42rem; border-radius:4px; margin-right:.35rem; vertical-align:middle; }
+    .issue-primary { background:var(--accent); color:#141314 !important; }
+    .issue-secondary { background:var(--bg-elevated); color:var(--text-secondary) !important; border:1px solid var(--border); }
+    mark.search-mark { background:#FFE38B; color:#141314; padding:.04rem .18rem; border-radius:2px; font-weight:600; }
 
-        .block-container {{
-            padding-top: 1.0rem !important;
-            padding-bottom: 4rem !important;
-            max-width: 1460px !important;
-        }}
+    /* Persistent right-side case navigator. */
+    div[data-testid="stHorizontalBlock"] { align-items:flex-start !important; }
+    div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
+    div[data-testid="column"]:has(#sticky-right-nav-marker) {
+      position:sticky !important; top:1rem !important; align-self:flex-start !important;
+      max-height:calc(100vh - 2rem) !important; overflow-y:auto !important;
+      padding-right:.15rem !important; z-index:8 !important;
+    }
+    .navigator-card {
+      background:var(--bg-elevated); border:1px solid var(--border);
+      border-radius:8px; padding:1rem .9rem; box-shadow:none; margin-bottom:.7rem;
+    }
+    .navigator-title {
+      font-family:var(--font-display) !important; font-size:1.35rem;
+      font-weight:600; line-height:1.05; color:var(--text-primary) !important;
+      margin-bottom:.65rem; padding:0 .2rem .65rem; border-bottom:1px solid var(--border);
+    }
+    .toc-nav-list { display:flex; flex-direction:column; gap:.18rem; margin-top:.35rem; }
+    a.toc-jump-link {
+      display:flex; align-items:center; gap:.5rem; padding:.43rem .5rem;
+      border-radius:5px; color:var(--text-secondary) !important;
+      text-decoration:none !important; font:500 .76rem/1.3 var(--font-ui);
+      transition:background .12s ease, color .12s ease;
+    }
+    a.toc-jump-link:hover, a.toc-jump-link.active { background:var(--accent-soft); color:var(--text-primary) !important; }
+    a.toc-jump-link.active { font-weight:700; box-shadow:inset 2px 0 0 var(--accent); }
+    .toc-sec-badge { color:var(--text-muted) !important; font:600 .65rem var(--font-ui); min-width:1.25rem; }
+    .search-mark { background:#FFE38B !important; color:#141314 !important; }
 
-        /* Cohesive, quieter application chrome */
-        div[data-testid="stHorizontalBlock"] {{ gap: 0.9rem; }}
-        div[data-testid="stTextInput"] label,
-        div[data-testid="stSelectbox"] label {{ font-weight: 600 !important; }}
-        .stButton > button {{ min-height: 2.25rem !important; }}
-        div[data-testid="stExpander"] {{ border-color: var(--border-subtle) !important; border-radius: 9px !important; }}
-        div[data-testid="stExpander"] summary {{ font-weight: 600 !important; }}
-        section[data-testid="stSidebar"] {{ padding-top: 1rem !important; }}
+    /* Focus mode: reading canvas narrows; the cabinet and right navigator remain available. */
+    @@FOCUS_READING@@
 
-        /* Ensure parent flex/grid containers allow position: sticky on the Right Navigator column */
-        div[data-testid="stHorizontalBlock"] {{
-            align-items: flex-start !important;
-        }}
+    @media (max-width:1100px) {
+      .block-container { padding-left:1.35rem !important; padding-right:1.35rem !important; }
+      .reader-sheet { padding:1.8rem 1.6rem 2.7rem; }
+      .masthead-title { font-size:1.7rem; }
+    }
+    @media (max-width:850px) {
+      .block-container { padding:1rem .9rem 3rem !important; }
+      .masthead-icon { width:39px; height:39px; font-size:1.2rem; }
+      .masthead-title { font-size:1.4rem; }
+      .masthead-subtitle { font-size:.57rem; }
+      .masthead-stats { gap:.55rem; }
+      .stat-item { padding-left:.5rem; min-width:54px; }
+      .stat-value { font-size:1.15rem; }
+      .stat-label { font-size:.53rem; }
+      .reader-sheet { padding:1.5rem 1.15rem 2.4rem; }
+      div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
+      div[data-testid="column"]:has(#sticky-right-nav-marker) {
+        position:static !important; max-height:none !important; overflow:visible !important;
+      }
+      .navigator-card { padding:.8rem; }
+      .toc-nav-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .timeline-row { grid-template-columns:1fr; gap:.2rem; }
+    }
+    @media (max-width:560px) {
+      .block-container { padding-left:.65rem !important; padding-right:.65rem !important; }
+      .masthead-subtitle { display:none; }
+      .masthead-title { font-size:1.15rem; }
+      .masthead-icon { width:34px; height:34px; }
+      .masthead-stats { display:none; }
+      .reader-sheet h1.case-main-title { font-size:2.25rem !important; }
+      .reader-sheet h3.sec-heading-text { font-size:1.35rem !important; }
+      .toc-nav-list { grid-template-columns:1fr 1fr; }
+      .search-card { padding:.9rem; }
+    }
+    """
 
-        /* Make any column containing #sticky-right-nav-marker follow the user smoothly on scroll */
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
-        div[data-testid="column"]:has(#sticky-right-nav-marker) {{
-            position: sticky !important;
-            top: 1.0rem !important;
-            align-self: flex-start !important;
-            max-height: calc(100vh - 2.0rem) !important;
-            overflow-y: auto !important;
-            padding-right: 0.25rem !important;
-            z-index: 40 !important;
-        }}
+    replacements = {**colors,
+        "BODY_SIZE": body_px,
+        "TITLE_SIZE": title_px,
+        "H3_SIZE": h3_px,
+        "SIDEBAR_DISPLAY": "flex" if cabinet_open else "none",
+        "FOCUS_READING": ".reader-sheet { max-width: 860px !important; margin-left:auto !important; margin-right:auto !important; }" if focus_mode else "",
+    }
+    for key, value in replacements.items():
+        css = css.replace(f"@@{key}@@", value)
 
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar {{
-            width: 5px;
-        }}
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar-thumb {{
-            background-color: var(--border-subtle);
-            border-radius: 4px;
-        }}
-
-        /* Persistent HTML TOC Links inside the Right Sidebar Navigator */
-        .toc-nav-list {{
-            display: flex;
-            flex-direction: column;
-            gap: 0.32rem;
-            margin-top: 0.5rem;
-        }}
-        a.toc-jump-link {{
-            display: flex;
-            align-items: center;
-            gap: 0.55rem;
-            padding: 0.46rem 0.68rem;
-            border-radius: 7px;
-            background-color: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            color: var(--text-primary) !important;
-            text-decoration: none !important;
-            font-family: var(--font-ui);
-            font-size: 0.81rem;
-            font-weight: 600;
-            line-height: 1.25;
-            transition: all 0.14s ease;
-        }}
-        a.toc-jump-link:hover {{
-            background-color: var(--btn-hover-bg);
-            border-color: var(--accent-navy);
-            color: var(--accent-navy) !important;
-            transform: translateX(2px);
-        }}
-        .toc-sec-badge {{
-            background-color: var(--bg-header);
-            color: #FFFFFF !important;
-            font-family: var(--font-mono);
-            font-size: 0.71rem;
-            font-weight: 600;
-            padding: 0.12rem 0.42rem;
-            border-radius: 4px;
-            flex-shrink: 0;
-        }}
-
-        section[data-testid="stSidebar"] {{
-            background-color: var(--bg-sidebar) !important;
-            border-right: 1px solid var(--border-subtle) !important;
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span,
-        section[data-testid="stSidebar"] h1,
-        section[data-testid="stSidebar"] h2,
-        section[data-testid="stSidebar"] h3,
-        section[data-testid="stSidebar"] h4,
-        section[data-testid="stSidebar"] h5 {{
-            color: var(--text-primary) !important;
-        }}
-        /* Keep the complete case list as a visible, clickable filing-cabinet list. */
-        section[data-testid="stSidebar"] div[role="radiogroup"] {{
-            gap: 0.12rem !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            align-items: flex-start !important;
-            padding: 0.28rem 0.35rem !important;
-            border-radius: 6px !important;
-            line-height: 1.35 !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
-            background: var(--btn-hover-bg) !important;
-        }}
-
-        .stButton > button,
-        .stPopover > div > button {{
-            background-color: var(--btn-bg) !important;
-            color: var(--btn-text) !important;
-            border: 1px solid var(--btn-border) !important;
-            border-radius: 8px !important;
-            font-family: var(--font-ui) !important;
-            font-weight: 600 !important;
-            font-size: 0.83rem !important;
-            transition: all 0.15s ease !important;
-            min-height: 2.4rem !important;
-        }}
-        .stButton > button:hover,
-        .stPopover > div > button:hover {{
-            background-color: var(--btn-hover-bg) !important;
-            border-color: var(--accent-navy) !important;
-            color: var(--accent-navy) !important;
-        }}
-        .stButton > button p, .stButton > button span {{
-            color: inherit !important;
-        }}
-
-        div[data-baseweb="input"] > div,
-        div[data-baseweb="select"] > div {{
-            background-color: var(--bg-input) !important;
-            color: var(--text-primary) !important;
-            border-color: var(--btn-border) !important;
-            border-radius: 8px !important;
-            min-height: 2.4rem !important;
-        }}
-        div[data-baseweb="input"] input {{
-            color: var(--text-primary) !important;
-            -webkit-text-fill-color: var(--text-primary) !important;
-        }}
-        div[data-baseweb="input"] input::placeholder {{
-            color: var(--text-muted) !important;
-            -webkit-text-fill-color: var(--text-muted) !important;
-            opacity: 1 !important;
-        }}
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div {{
-            color: var(--text-primary) !important;
-        }}
-        ul[data-baseweb="menu"], div[data-baseweb="popover"] {{
-            background-color: var(--bg-surface) !important;
-            color: var(--text-primary) !important;
-            border: 1px solid var(--border-subtle) !important;
-        }}
-        li[role="option"] {{
-            background-color: var(--bg-surface) !important;
-            color: var(--text-primary) !important;
-        }}
-        li[role="option"]:hover {{
-            background-color: var(--btn-hover-bg) !important;
-        }}
-
-        details[data-testid="stExpander"] {{
-            background-color: var(--bg-surface) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 8px !important;
-        }}
-        details[data-testid="stExpander"] summary,
-        details[data-testid="stExpander"] summary p,
-        details[data-testid="stExpander"] summary span,
-        details[data-testid="stExpander"] div {{
-            color: var(--text-primary) !important;
-        }}
-
-        .library-masthead {{
-            background-color: var(--bg-header);
-            color: #FFFFFF;
-            padding: 1.05rem 1.65rem;
-            border-radius: 10px;
-            margin-bottom: 0.85rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 1rem;
-            border-bottom: 3px solid var(--accent-gold);
-            box-shadow: var(--shadow-card);
-        }}
-        .masthead-brand {{ display: flex; align-items: center; gap: 0.85rem; }}
-        .masthead-icon {{ font-size: 1.7rem; line-height: 1; }}
-        .masthead-title {{
-            font-family: var(--font-serif);
-            font-size: 1.4rem;
-            font-weight: 700;
-            color: #FFFFFF !important;
-            margin: 0;
-        }}
-        .masthead-subtitle {{
-            font-family: var(--font-ui);
-            font-size: 0.77rem;
-            color: #CBD5E1 !important;
-            margin: 0;
-        }}
-        .masthead-stats {{ display: flex; gap: 0.65rem; align-items: center; flex-wrap: wrap; }}
-        .stat-pill {{
-            background: rgba(255, 255, 255, 0.12);
-            border: 1px solid rgba(255, 255, 255, 0.22);
-            color: #F8FAFC !important;
-            font-family: var(--font-mono);
-            font-size: 0.74rem;
-            padding: 0.28rem 0.65rem;
-            border-radius: 6px;
-        }}
-
-        .reader-sheet {{
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: 10px;
-            padding: 2.6rem 3.1rem;
-            max-width: 820px;
-            margin: 0 auto 2rem auto;
-            box-shadow: var(--shadow-card);
-            color: var(--text-primary);
-        }}
-
-        .breadcrumb-bar {{
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 0.5rem;
-            margin-bottom: 0.9rem;
-        }}
-        .subj-badge {{
-            background-color: var(--bg-header);
-            color: #FFFFFF !important;
-            font-family: var(--font-ui);
-            font-size: 0.75rem;
-            font-weight: 600;
-            padding: 0.25rem 0.7rem;
-            border-radius: 6px;
-        }}
-        .cat-badge {{
-            background-color: var(--callout-blue-bg);
-            color: var(--accent-navy) !important;
-            border: 1px solid var(--border-subtle);
-            font-family: var(--font-ui);
-            font-size: 0.76rem;
-            font-weight: 600;
-            padding: 0.25rem 0.7rem;
-            border-radius: 6px;
-        }}
-        .gr-badge {{
-            background-color: var(--callout-gold-bg);
-            color: var(--text-primary) !important;
-            font-family: var(--font-mono);
-            font-size: 0.75rem;
-            font-weight: 500;
-            padding: 0.25rem 0.65rem;
-            border-radius: 6px;
-        }}
-
-        .reader-sheet h1.case-main-title {{
-            font-family: var(--font-serif) !important;
-            font-size: {title_px} !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-            line-height: 1.25 !important;
-            margin: 0.25rem 0 0.75rem 0 !important;
-            letter-spacing: -0.015em !important;
-        }}
-        .case-meta-row {{
-            font-family: var(--font-ui);
-            font-size: 0.84rem;
-            color: var(--text-muted);
-            padding-bottom: 1.15rem;
-            margin-bottom: 1.5rem;
-            border-bottom: 1px solid var(--border-subtle);
-            display: flex;
-            flex-wrap: wrap;
-            gap: 1rem;
-            align-items: center;
-        }}
-        .source-link {{
-            color: var(--accent-sage) !important;
-            font-weight: 600;
-            text-decoration: none;
-        }}
-        .source-link:hover {{ text-decoration: underline; }}
-
-        .digest-section-block {{
-            margin-top: 2.1rem;
-            padding-top: 0.25rem;
-            scroll-margin-top: 28px;
-        }}
-        .digest-section-header {{
-            display: flex;
-            align-items: baseline;
-            gap: 0.65rem;
-            border-bottom: 2px solid var(--border-subtle);
-            padding-bottom: 0.55rem;
-            margin-bottom: 1.1rem;
-        }}
-        .sec-num-badge {{
-            background-color: var(--bg-header);
-            color: #FFFFFF !important;
-            font-family: var(--font-mono);
-            font-size: 0.78rem;
-            font-weight: 600;
-            padding: 0.2rem 0.55rem;
-            border-radius: 5px;
-            flex-shrink: 0;
-        }}
-        .reader-sheet h3.sec-heading-text {{
-            font-family: var(--font-ui) !important;
-            font-size: {h3_px} !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-            margin: 0 !important;
-            line-height: 1.3 !important;
-        }}
-
-        .reader-sheet .legal-prose,
-        .reader-sheet .digest-p,
-        .reader-sheet .timeline-event,
-        .reader-sheet .num-content,
-        .reader-sheet .trigger-text,
-        .reader-sheet .fallo-text,
-        .reader-sheet .quote-callout-body,
-        .reader-sheet .recit-callout {{
-            font-family: var(--font-serif) !important;
-            font-size: {body_px} !important;
-            line-height: 1.72 !important;
-            color: var(--text-primary) !important;
-            text-align: left !important;
-        }}
-        .digest-p {{ margin: 0 0 0.95rem 0 !important; }}
-        .inline-lead {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.92em !important;
-            color: var(--accent-navy) !important;
-            font-weight: 700 !important;
-        }}
-        .digest-subheading {{
-            font-family: var(--font-ui) !important;
-            font-size: 1.05em !important;
-            font-weight: 600 !important;
-            color: var(--accent-navy) !important;
-            margin: 1.25rem 0 0.5rem 0 !important;
-        }}
-        .party-header {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.95rem !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-            background-color: var(--bg-elevated);
-            border-left: 3px solid var(--accent-sage);
-            padding: 0.5rem 0.9rem;
-            margin: 1.1rem 0 0.7rem 0;
-            border-radius: 0 6px 6px 0;
-        }}
-
-        .trigger-box {{
-            background-color: var(--callout-green-bg);
-            border-left: 4px solid var(--accent-sage);
-            padding: 1rem 1.25rem;
-            border-radius: 0 8px 8px 0;
-            margin: 1rem 0 1.35rem 0;
-        }}
-        .trigger-title {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.82rem !important;
-            font-weight: 700 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: var(--accent-sage) !important;
-            margin-bottom: 0.35rem;
-        }}
-
-        .quote-callout, .legal-blockquote {{
-            background-color: var(--callout-gold-bg);
-            border-left: 4px solid var(--accent-gold);
-            padding: 0.95rem 1.25rem;
-            border-radius: 0 8px 8px 0;
-            margin: 0.95rem 0;
-            font-style: italic;
-        }}
-        .quote-callout-label {{
-            font-family: var(--font-ui) !important;
-            font-style: normal !important;
-            font-size: 0.78rem !important;
-            font-weight: 700 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: var(--accent-navy) !important;
-            margin-bottom: 0.35rem;
-        }}
-
-        .recit-callout {{
-            background-color: var(--callout-blue-bg);
-            border-left: 4px solid var(--accent-primary);
-            padding: 0.95rem 1.2rem;
-            border-radius: 0 8px 8px 0;
-            margin: 0.85rem 0 1.25rem 0;
-        }}
-        .recit-label {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.86rem !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-        }}
-
-        .issue-verdict-banner {{
-            background-color: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            border-left: 4px solid var(--accent-navy);
-            padding: 0.75rem 1rem;
-            border-radius: 6px;
-            margin: 1rem 0 0.75rem 0;
-        }}
-        .verdict-tag {{
-            font-family: var(--font-ui) !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-        }}
-
-        .fallo-box {{
-            background-color: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            border-top: 3px solid var(--accent-gold);
-            padding: 1.1rem 1.35rem;
-            border-radius: 8px;
-            margin: 1.1rem 0;
-        }}
-        .fallo-title {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.82rem !important;
-            font-weight: 700 !important;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-            color: var(--accent-navy) !important;
-            margin-bottom: 0.4rem;
-        }}
-
-        .timeline-row {{
-            display: grid;
-            grid-template-columns: 165px 1fr;
-            gap: 1rem;
-            padding: 0.65rem 0;
-            border-bottom: 1px dashed var(--border-subtle);
-            align-items: baseline;
-        }}
-        .timeline-date {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.88rem !important;
-            font-weight: 700 !important;
-            color: var(--accent-navy) !important;
-        }}
-
-        .numbered-item {{
-            display: flex;
-            gap: 0.75rem;
-            align-items: flex-start;
-            margin-bottom: 0.85rem;
-        }}
-        .num-circle {{
-            font-family: var(--font-mono) !important;
-            font-size: 0.82rem !important;
-            font-weight: 600 !important;
-            color: var(--accent-navy) !important;
-            background-color: var(--callout-blue-bg);
-            padding: 0.15rem 0.5rem;
-            border-radius: 5px;
-            flex-shrink: 0;
-            margin-top: 0.15rem;
-        }}
-        .issue-pill {{
-            font-family: var(--font-ui) !important;
-            font-size: 0.7rem !important;
-            font-weight: 700 !important;
-            padding: 0.15rem 0.5rem;
-            border-radius: 4px;
-            margin-right: 0.4rem;
-            vertical-align: middle;
-        }}
-        .issue-primary {{ background-color: var(--accent-gold); color: #FFFFFF !important; }}
-        .issue-secondary {{ background-color: var(--callout-blue-bg); color: var(--accent-navy) !important; }}
-
-        .navigator-card {{
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-radius: 10px;
-            padding: 1rem 1.1rem;
-            box-shadow: var(--shadow-card);
-            margin-bottom: 0.75rem;
-        }}
-        .navigator-title {{
-            font-family: var(--font-ui);
-            font-size: 0.81rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--accent-navy);
-            margin-bottom: 0.35rem;
-            padding-bottom: 0.45rem;
-            border-bottom: 2px solid var(--border-subtle);
-        }}
-
-        mark.search-mark {{
-            background-color: var(--mark-bg);
-            color: var(--mark-text);
-            padding: 0.05rem 0.25rem;
-            border-radius: 3px;
-            font-weight: 600;
-        }}
-        .search-card {{
-            background-color: var(--bg-surface);
-            border: 1px solid var(--border-subtle);
-            border-left: 4px solid var(--accent-navy);
-            border-radius: 8px;
-            padding: 1.15rem 1.35rem;
-            margin-bottom: 0.85rem;
-            box-shadow: var(--shadow-card);
-        }}
-        .search-snippet {{
-            font-family: var(--font-serif);
-            font-size: 0.96rem;
-            color: var(--text-secondary);
-            line-height: 1.55;
-            margin-top: 0.5rem;
-        }}
-
-        @media (max-width: 768px) {{
-            .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
-            div[data-testid="stColumn"]:has(#sticky-right-nav-marker) {{
-                position: static !important;
-                max-height: none !important;
-            }}
-        }}
-        @media (max-width: 640px) {{
-            .block-container {{ padding-left: 0.75rem !important; padding-right: 0.75rem !important; }}
-            .library-masthead {{ padding: 0.9rem 1.1rem; }}
-            .masthead-title {{ font-size: 1.18rem; }}
-            .reader-sheet {{ padding: 1.25rem 1.05rem; border-radius: 8px; }}
-            .reader-sheet h1.case-main-title {{ font-size: 1.45rem !important; }}
-            .timeline-row {{ grid-template-columns: 1fr; gap: 0.2rem; }}
-        }}
-
-        {focus_reading_css}
-        </style>""",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
 # --- 6. LOAD LIBRARY DATA ---
@@ -1933,13 +1686,14 @@ inject_custom_css(
     st.session_state.theme_mode,
     st.session_state.focus_mode,
     st.session_state.font_scale,
+    st.session_state.cabinet_open,
 )
 
 
 # --- 7. SIDEBAR: 2-TIER FILING CABINET + PERSISTENT CASE LIST ---
 with st.sidebar:
-    st.markdown("### 🗄️ Filing Cabinet")
-    st.caption("Browse by subject, topic, or case")
+    st.markdown("### Filing Cabinet")
+    st.caption("Browse the library by subject, topic, or case.")
 
     if not cases:
         st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator or import a `.docx` casebook.")
@@ -2037,61 +1791,78 @@ with st.sidebar:
                 st.info("No cases are available in this folder.")
 
 
-# --- 8. TOP INSTITUTIONAL MASTHEAD & COMPACT COMMAND BAR ---
+# --- 8. EDITORIAL MASTHEAD & COMMAND BAR ---
 unique_subjects_count = len({c.get("subject", "General Jurisprudence") for c in cases})
 unique_topics_count = len({c.get("topic", "General Topic") for c in cases})
-masthead_html = (
-    "<div class='library-masthead'>"
-    "<div class='masthead-brand'>"
-    "<span class='masthead-icon'>⚖️</span>"
-    "<div>"
-    "<div class='masthead-title'>Philippine Jurisprudence Library</div>"
-    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • 2-Tier Subject &amp; Topic Matrix • Lexical Research Engine</div>"
-    "</div>"
-    "</div>"
-    "<div class='masthead-stats'>"
-    f"<span class='stat-pill'>📚 {len(cases)} Cases</span>"
-    f"<span class='stat-pill'>🏛️ {unique_subjects_count} Subjects</span>"
-    f"<span class='stat-pill'>🗂️ {unique_topics_count} Topics</span>"
-    "</div>"
-    "</div>"
-)
-st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Compact command bar: search + workflow + typography + sequential view mode.
+menu_col, brand_col, stats_col = st.columns([0.48, 4.4, 2.2])
+with menu_col:
+    st.button(
+        "☰",
+        key="toggle_filing_cabinet",
+        on_click=_cb_toggle_cabinet,
+        help=("Hide the filing cabinet" if st.session_state.cabinet_open else "Show the filing cabinet"),
+    )
+with brand_col:
+    st.markdown(
+        """
+        <div class="masthead-brand">
+          <div class="masthead-icon">⚖</div>
+          <div>
+            <div class="masthead-title">Philippine Jurisprudence Library</div>
+            <div class="masthead-subtitle">Research · Read · Understand</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with stats_col:
+    st.markdown(
+        f"""
+        <div class="masthead-stats">
+          <div class="stat-item"><span class="stat-value">{len(cases):,}</span><span class="stat-label">Cases indexed</span></div>
+          <div class="stat-item"><span class="stat-value">{unique_subjects_count:,}</span><span class="stat-label">Subjects</span></div>
+          <div class="stat-item"><span class="stat-value">{unique_topics_count:,}</span><span class="stat-label">Topics</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+st.markdown("<div class='workspace-rule'></div>", unsafe_allow_html=True)
+
+# Compact controls: one global search, one study lens, one typography control, one sequential view switch.
 mode_options = [
     "📖 First-Time Read",
     "⚡ Exam & Recit Review",
     "🔎 Legal Research",
 ]
 size_options = ["Compact", "Standard", "Comfortable"]
-
-cmd_columns = st.columns([4.4, 1.65, 1.2, 1.05], gap="small")
-cmd_c1, cmd_c2, cmd_c3, cmd_c4 = cmd_columns
+cmd_c1, cmd_c2, cmd_c3, cmd_c4 = st.columns([4.5, 1.65, 1.15, 1.15], gap="small")
 with cmd_c1:
+    st.markdown("<div class='command-label'>Search the jurisprudence library</div>", unsafe_allow_html=True)
     st.text_input(
         "Search jurisprudence",
         key="active_search_query",
-        placeholder="Search case titles, G.R. numbers, subjects, topics, doctrines, or Latin maxims…",
+        placeholder="Case title, G.R. number, party, doctrine, or Latin maxim…",
         label_visibility="collapsed",
     )
 with cmd_c2:
+    st.markdown("<div class='command-label'>Study lens</div>", unsafe_allow_html=True)
     selected_mode = st.selectbox(
         "Reading workflow",
         options=mode_options,
         index=mode_options.index(st.session_state.study_mode),
         label_visibility="collapsed",
-        help="Choose the reading lens for this case.",
     )
     if selected_mode != st.session_state.study_mode:
         st.session_state.study_mode = selected_mode
         st.rerun()
 with cmd_c3:
+    st.markdown("<div class='command-label'>Text size</div>", unsafe_allow_html=True)
     top_font_choice = st.selectbox(
         "Reading text size",
         options=size_options,
         index=size_options.index(st.session_state.font_scale),
-        format_func=lambda value: f"Aa · {value}",
+        format_func=lambda value: {"Compact": "Compact", "Standard": "Standard", "Comfortable": "Large"}[value],
         label_visibility="collapsed",
     )
     if top_font_choice != st.session_state.font_scale:
@@ -2099,59 +1870,54 @@ with cmd_c3:
         st.rerun()
 with cmd_c4:
     view_sequence = [
-        ("Light", False, "☀️ Light"),
-        ("Dark", False, "🌙 Dark"),
-        ("Light", True, "☀️ Focus"),
-        ("Dark", True, "🌙 Focus"),
+        ("Light", False, "Light"),
+        ("Dark", False, "Dark"),
+        ("Light", True, "Focus · Light"),
+        ("Dark", True, "Focus · Dark"),
     ]
     current_view = (st.session_state.theme_mode, st.session_state.focus_mode)
-    current_view_index = next(
-        (i for i, view in enumerate(view_sequence) if view[:2] == current_view), 0
-    )
-    next_view_label = view_sequence[(current_view_index + 1) % len(view_sequence)][2]
+    current_view_index = next((i for i, view in enumerate(view_sequence) if view[:2] == current_view), 0)
+    st.markdown("<div class='command-label'>Appearance</div>", unsafe_allow_html=True)
     st.button(
-        next_view_label,
+        f"◐ {view_sequence[current_view_index][2]}",
         key="cycle_view_mode_btn",
         on_click=_cb_cycle_view_mode,
         use_container_width=True,
-        help="Cycle through Light → Dark → Focus Light → Focus Dark → Light.",
+        help="Cycle: Light → Dark → Focus Light → Focus Dark → Light.",
     )
+
 # --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
-if query_str and bm25 and cases:
+if query_str and cases:
 
     st.markdown(
-        f"#### 🔎 Search results for *'{html.escape(query_str)}'* · {len(ranked_pairs)} matching cases"
+        f"<div class='search-heading'>Search results</div><div class='search-snippet'>“{html.escape(query_str)}” · {len(ranked_pairs):,} matching cases</div>",
+        unsafe_allow_html=True,
     )
-    st.caption("Choose a matching case from the left Filing Cabinet to open it. The sidebar retains the complete ranked result list.")
+    st.caption("Select any result from the Filing Cabinet on the left to open its digest. The complete ranked list remains available there.")
 
-    if not ranked_pairs:
+    if not bm25:
+        st.warning("The lexical search index is unavailable. Check that `rank-bm25` is installed and restart the app.")
+    elif not ranked_pairs:
         st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
     else:
         for idx, score_val in ranked_pairs[:15]:
             match_case = cases[idx]
             snippet_html = get_search_snippet(match_case.get("digest", ""), query_tokens)
-            parsed_m = parse_digest_structure(match_case.get("digest", ""))
-            quote_preview = parsed_m["quotes"][0] if parsed_m["quotes"] else ""
 
             card_html = (
                 "<div class='search-card'>"
-                "<div class='breadcrumb-bar'>"
-                f"<span class='subj-badge'>🏛️ {html.escape(match_case.get('subject', 'General'))}</span>"
-                f"<span class='cat-badge'>📁 {html.escape(match_case.get('topic', 'General'))}</span>"
-                f"<span class='gr-badge'>{html.escape(match_case.get('lookup_key', ''))}</span>"
-                f"<span class='gr-badge'>BM25 Score: {score_val:.2f}</span>"
+                "<div class='search-meta-row'>"
+                f"<span class='search-meta-chip'>{html.escape(match_case.get('subject', 'General'))}</span>"
+                f"<span class='search-meta-chip'>{html.escape(match_case.get('topic', 'General'))}</span>"
+                f"<span class='search-meta-chip'>{html.escape(match_case.get('lookup_key', ''))}</span>"
                 "</div>"
-                f"<div style='font-family: var(--font-serif); font-size: 1.25rem; font-weight: 700; color: var(--accent-navy);'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
+                f"<div class='search-card-title'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
                 f"<div class='search-snippet'>{snippet_html}</div>"
                 "</div>"
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-            if quote_preview:
-                with st.popover("📋 Copy Citation & Holding"):
-                    st.caption("Ready to paste into legal pleadings or notes:")
-                    st.code(f"{match_case.get('citation', '')}\n\n{quote_preview}", language="markdown")
-            st.markdown("<div style='margin-bottom: 0.75rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 0.55rem;'></div>", unsafe_allow_html=True)
 
     st.stop()
 
@@ -2322,184 +2088,68 @@ with reader_container:
 
     reader_html = (
         "<div class='reader-sheet'>"
+        "<div class='reader-eyebrow'>Supreme Court decision · Research file</div>"
         f"<div class='breadcrumb-bar'>"
         f"<span class='subj-badge'>🏛️ {html.escape(subj_label)}</span>"
         f"<span class='cat-badge'>📁 {html.escape(topic_label)}</span>"
         f"{gr_pill_html}"
         f"</div>"
         f"<h1 class='case-main-title'>{html.escape(active_case.get('citation', 'Untitled Case'))}</h1>"
-        f"<div class='case-meta-row'><span>🗓️ Cataloged: <strong>{html.escape(date_cat)}</strong></span><span>•</span>{source_link_html}</div>"
+        f"<div class='case-meta-row'><span>Cataloged {html.escape(date_cat)}</span><span>·</span>{source_link_html}</div>"
         f"{mode_banner_html}"
         f"{full_sections_html}"
         "</div>"
     )
     st.markdown(reader_html, unsafe_allow_html=True)
 
-# Execute smooth JavaScript scroll for section navigation and case changes.
+# Small same-origin helper: smooth case jumps and keep the right navigator's active
+# section synchronized with the reading position. The visible menu control itself is
+# a native Streamlit button, so it does not depend on Streamlit's internal DOM selectors.
 scroll_target_id = st.session_state.scroll_to_anchor
 st.session_state.scroll_to_anchor = ""
-
+import streamlit.components.v1 as components
 components.html(
     f"""
-    <html>
-      <head>
-        <style>
-          html, body {{
-            margin: 0; padding: 0; width: 46px; height: 46px;
-            overflow: hidden; background: transparent;
+    <script>
+    (function() {{
+      const parentDoc = window.parent.document;
+      const targetId = {__import__('json').dumps(scroll_target_id)};
+      if (targetId) {{
+        const target = parentDoc.getElementById(targetId);
+        if (target) target.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+      }}
+
+      const links = Array.from(parentDoc.querySelectorAll('a.toc-jump-link[href^="#"]'));
+      links.forEach(link => {{
+        if (link.dataset.editorialBound === '1') return;
+        link.dataset.editorialBound = '1';
+        link.addEventListener('click', event => {{
+          const id = link.getAttribute('href').slice(1);
+          const target = parentDoc.getElementById(id);
+          if (target) {{
+            event.preventDefault();
+            target.scrollIntoView({{behavior: 'smooth', block: 'start'}});
           }}
-          #drawer-toggle {{
-            width: 42px; height: 42px; margin: 2px;
-            display: flex; align-items: center; justify-content: center;
-            border: 1px solid {('#3B475B' if st.session_state.theme_mode == 'Dark' else '#D5DCE5')};
-            border-radius: 12px;
-            background: {('#172235' if st.session_state.theme_mode == 'Dark' else '#FFFFFF')};
-            color: {('#F1F5F9' if st.session_state.theme_mode == 'Dark' else '#172C3F')};
-            box-shadow: 0 2px 10px rgba(0,0,0,.16);
-            cursor: pointer; transition: transform .12s ease, background .12s ease;
-          }}
-          #drawer-toggle:hover {{ transform: translateY(-1px); background: {('#26364F' if st.session_state.theme_mode == 'Dark' else '#F1F5F9')}; }}
-          #drawer-toggle:focus-visible {{ outline: 3px solid #7C9DCC; outline-offset: 2px; }}
-          #drawer-toggle svg {{ width: 21px; height: 21px; }}
-        </style>
-      </head>
-      <body>
-        <button id="drawer-toggle" type="button" aria-label="Toggle filing cabinet" title="Show or hide filing cabinet">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="2.3" stroke="currentColor" stroke-width="1.7"/>
-            <path d="M9 4.8v14.4M12.5 9h4M12.5 12h4M12.5 15h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-          </svg>
-        </button>
-        <script>
-        (function() {{
-            const parentDoc = window.parent.document;
+        }});
+      }});
 
-            // Pin this component to the viewport. The outer wrapper is styled
-            // here as well as in the app CSS to tolerate Streamlit DOM changes.
-            const frame = window.frameElement;
-            const frameWrapper = frame && (
-                frame.closest('[data-testid="stCustomComponentV1"]') ||
-                frame.closest('[data-testid="stIFrame"]') ||
-                frame.parentElement
-            );
-            if (frameWrapper) {{
-                Object.assign(frameWrapper.style, {{
-                    position: 'fixed', top: '0.45rem', left: '0.55rem',
-                    width: '46px', height: '46px', minWidth: '46px',
-                    margin: '0', padding: '0', zIndex: '1000000',
-                    pointerEvents: 'auto'
-                }});
-            }}
-            if (frame) {{
-                Object.assign(frame.style, {{
-                    width: '46px', height: '46px', border: '0',
-                    position: 'relative', display: 'block'
-                }});
-            }}
-
-            // Read Streamlit's own state instead of maintaining a second,
-            // potentially conflicting sidebar state in Python.
-            function sidebarIsExpanded() {{
-                const sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
-                if (sidebar) {{
-                    const expanded = sidebar.getAttribute('aria-expanded');
-                    if (expanded === 'true') return true;
-                    if (expanded === 'false') return false;
-                }}
-                return Boolean(parentDoc.querySelector('[data-testid="stSidebarCollapseButton"]'));
-            }}
-
-            function findControl(selectors) {{
-                for (const selector of selectors) {{
-                    const found = parentDoc.querySelector(selector);
-                    if (found && !found.disabled) {{
-                        const nestedButton = found.matches('button') ? found : found.querySelector('button');
-                        return nestedButton || found;
-                    }}
-                }}
-                return null;
-            }}
-
-            function toggleSidebar() {{
-                const expanded = sidebarIsExpanded();
-                const collapseSelectors = [
-                    '[data-testid="stSidebarCollapseButton"] button',
-                    '[data-testid="stSidebarCollapseButton"]',
-                    'button[aria-label*="Collapse sidebar" i]',
-                    'button[title*="Collapse sidebar" i]'
-                ];
-                const expandSelectors = [
-                    '[data-testid="stExpandSidebarButton"] button',
-                    '[data-testid="stExpandSidebarButton"]',
-                    '[data-testid="collapsedControl"] button',
-                    '[data-testid="collapsedControl"]',
-                    '[data-testid="stSidebarCollapsedControl"] button',
-                    '[data-testid="stSidebarCollapsedControl"]',
-                    '[data-testid="stSidebarExpandButton"] button',
-                    '[data-testid="stSidebarExpandButton"]',
-                    /* Some Streamlit releases reuse this control in both states. */
-                    '[data-testid="stSidebarCollapseButton"] button',
-                    '[data-testid="stSidebarCollapseButton"]',
-                    'button[aria-label*="Expand sidebar" i]',
-                    'button[title*="Expand sidebar" i]',
-                    'button[aria-label*="Open sidebar" i]',
-                    'button[title*="Open sidebar" i]'
-                ];
-                const target = findControl(expanded ? collapseSelectors : expandSelectors);
-                if (target) {{
-                    target.click();
-                    return;
-                }}
-
-                // Last-resort fallback: click whichever native sidebar control
-                // Streamlit has mounted, even if its test id changed in a release.
-                const fallback = findControl([
-                    '[data-testid="stSidebarCollapseButton"] button',
-                    '[data-testid="stSidebarCollapseButton"]',
-                    '[data-testid="stExpandSidebarButton"] button',
-                    '[data-testid="stExpandSidebarButton"]',
-                    '[data-testid="collapsedControl"] button',
-                    '[data-testid="collapsedControl"]',
-                    '[data-testid="stSidebarCollapsedControl"] button',
-                    '[data-testid="stSidebarCollapsedControl"]',
-                    '[data-testid="stSidebarExpandButton"] button',
-                    '[data-testid="stSidebarExpandButton"]'
-                ]);
-                if (fallback) fallback.click();
-            }}
-
-            document.getElementById('drawer-toggle').addEventListener('click', toggleSidebar);
-
-            // 1. Handle programmatic smooth scroll after a case selection.
-            const targetId = {json.dumps(scroll_target_id)};
-            if (targetId) {{
-                const el = parentDoc.getElementById(targetId);
-                if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-            }}
-
-            // 2. Bind smooth scrolling to all right navigator HTML anchor links.
-            const tocLinks = parentDoc.querySelectorAll('a.toc-jump-link');
-            tocLinks.forEach(link => {{
-                if (!link.dataset.boundSmooth) {{
-                    link.dataset.boundSmooth = 'true';
-                    link.addEventListener('click', function(e) {{
-                        const href = this.getAttribute('href');
-                        if (href && href.startsWith('#')) {{
-                            const target = parentDoc.getElementById(href.substring(1));
-                            if (target) {{
-                                e.preventDefault();
-                                target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                            }}
-                        }}
-                    }});
-                }}
-            }});
-        }})();
-        </script>
-      </body>
-    </html>
+      if ('IntersectionObserver' in window.parent) {{
+        const sections = Array.from(parentDoc.querySelectorAll('.digest-section-block[id]'));
+        const linkById = new Map(links.map(link => [link.getAttribute('href').slice(1), link]));
+        const observer = new window.parent.IntersectionObserver(entries => {{
+          const visible = entries.filter(entry => entry.isIntersecting)
+            .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          if (!visible.length) return;
+          links.forEach(link => link.classList.remove('active'));
+          const activeLink = linkById.get(visible[0].target.id);
+          if (activeLink) activeLink.classList.add('active');
+        }}, {{root: null, rootMargin: '-12% 0px -72% 0px', threshold: 0}});
+        sections.forEach(section => observer.observe(section));
+      }}
+    }})();
+    </script>
     """,
-    height=46,
-    width=46,
+    height=1,
+    width=1,
     scrolling=False,
 )
