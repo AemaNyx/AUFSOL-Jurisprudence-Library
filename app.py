@@ -45,21 +45,28 @@ if st.session_state.study_mode not in {
     st.session_state.study_mode = "📖 First-Time Read"
 
 
-def _cb_open_case_from_search(uid: str, subj: str, top: str):
-    st.session_state.selected_subject = subj or "-- All Subjects --"
-    st.session_state.selected_topic = top or "-- All Topics --"
-    st.session_state.selected_lookup_key = uid
+def _cb_select_sidebar_case():
+    """Open the case selected from the persistent, clickable sidebar list."""
+    chosen = st.session_state.get("_sidebar_case_radio")
+    if not chosen:
+        return
+
+    st.session_state.selected_lookup_key = chosen
     st.session_state.active_search_query = ""
-    st.session_state["cabinet_filter"] = ""
     st.session_state.scroll_to_anchor = "reader-top-anchor"
 
+    # Search results are global, so selecting one also updates the folder filters.
+    chosen_case = next((case for case in cases if case.get("_uid") == chosen), None)
+    if chosen_case:
+        st.session_state.selected_subject = chosen_case.get("subject") or "-- All Subjects --"
+        st.session_state.selected_topic = chosen_case.get("topic") or "-- All Topics --"
+        st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
+        st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
 
-def _cb_select_sidebar_case():
-    chosen = st.session_state.get("_sidebar_case_select")
-    if chosen:
-        st.session_state.selected_lookup_key = chosen
-        st.session_state.active_search_query = ""
-        st.session_state.scroll_to_anchor = "reader-top-anchor"
+
+def _cb_show_filing_cabinet():
+    """Restore the left case library without changing the current theme."""
+    st.session_state.focus_mode = False
 
 
 def _cb_on_subject_change():
@@ -532,6 +539,34 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
         end = min(len(text), best_pos + window - 70)
         snippet = ("..." if start > 0 else "") + text[start:end].replace("\n", " ") + ("..." if end < len(text) else "")
     return format_inline_markdown(snippet, query_tokens)
+
+
+
+def rank_case_matches(query: str, library_cases: List[Dict[str, Any]], search_index: Optional[BM25Okapi]) -> List[Tuple[int, float]]:
+    """Return all matching case indexes in the same BM25 order used by the results page."""
+    query = (query or "").strip()
+    if not query or not search_index or not library_cases:
+        return []
+
+    tokens = [token for token in re.split(r"\W+", query.lower()) if token]
+    if not tokens:
+        return []
+
+    scores = search_index.get_scores(tokens)
+    ranked: List[Tuple[int, float]] = []
+    query_lower = query.lower()
+    for idx, base_score in enumerate(scores):
+        case = library_cases[idx]
+        haystack = (
+            f"{case.get('citation', '')} {case.get('lookup_key', '')} "
+            f"{case.get('subject', '')} {case.get('topic', '')} {case.get('digest', '')}"
+        ).lower()
+        score = float(base_score) + (5.0 if query_lower in haystack else 0.0)
+        if score > 0:
+            ranked.append((idx, score))
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+    return ranked
 
 
 
@@ -1386,6 +1421,19 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
         section[data-testid="stSidebar"] h5 {{
             color: var(--text-primary) !important;
         }}
+        /* Keep the complete case list as a visible, clickable filing-cabinet list. */
+        section[data-testid="stSidebar"] div[role="radiogroup"] {{
+            gap: 0.12rem !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
+            align-items: flex-start !important;
+            padding: 0.28rem 0.35rem !important;
+            border-radius: 6px !important;
+            line-height: 1.35 !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
+            background: var(--btn-hover-bg) !important;
+        }}
 
         .stButton > button,
         .stPopover > div > button {{
@@ -1840,6 +1888,12 @@ cases, bm25, tokenized_corpus = load_library()
 if cases and not st.session_state.selected_lookup_key:
     st.session_state.selected_lookup_key = cases[0]["_uid"]
 
+# Search state is available before rendering the sidebar, so the left case list can
+# immediately reflect the same global search as the main results area.
+query_str = st.session_state.get("active_search_query", "").strip()
+query_tokens = [token for token in re.split(r"\W+", query_str.lower()) if token]
+ranked_pairs = rank_case_matches(query_str, cases, bm25)
+
 inject_custom_css(
     st.session_state.theme_mode,
     st.session_state.focus_mode,
@@ -1847,7 +1901,7 @@ inject_custom_css(
 )
 
 
-# --- 7. SIDEBAR: 2-TIER FILING CABINET (SUBJECT -> TOPIC -> CASES) ---
+# --- 7. SIDEBAR: 2-TIER FILING CABINET + PERSISTENT CASE LIST ---
 with st.sidebar:
     st.markdown("### 🗄️ Filing Cabinet")
     st.caption("Browse by subject, topic, or case")
@@ -1855,24 +1909,21 @@ with st.sidebar:
     if not cases:
         st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator or import a `.docx` casebook.")
     else:
-        # Tier 1: Subject Selector
-        all_subjects = sorted(list({c.get("subject", "General Jurisprudence") for c in cases}))
-        subj_counts = {s: sum(1 for c in cases if c.get("subject") == s) for s in all_subjects}
+        all_subjects = sorted({c.get("subject", "General Jurisprudence") for c in cases})
+        subj_counts = {subject: sum(1 for c in cases if c.get("subject") == subject) for subject in all_subjects}
         subj_options = ["-- All Subjects --"] + all_subjects
         if st.session_state.selected_subject not in subj_options:
             st.session_state.selected_subject = "-- All Subjects --"
-
-        def _fmt_subject(opt: str) -> str:
-            if opt == "-- All Subjects --":
-                return f"📚 All Subjects ({len(cases)})"
-            return f"🏛️ {opt} ({subj_counts.get(opt, 0)})"
-
         if st.session_state.get("_sidebar_subj_select") != st.session_state.selected_subject:
             st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
+
         st.selectbox(
             "Subject / Course",
             options=subj_options,
-            format_func=_fmt_subject,
+            format_func=lambda opt: (
+                f"📚 All Subjects ({len(cases)})" if opt == "-- All Subjects --"
+                else f"🏛️ {opt} ({subj_counts.get(opt, 0)})"
+            ),
             key="_sidebar_subj_select",
             on_change=_cb_on_subject_change,
         )
@@ -1880,70 +1931,75 @@ with st.sidebar:
         chosen_subj = st.session_state.selected_subject
         subj_filtered = cases if chosen_subj == "-- All Subjects --" else [c for c in cases if c.get("subject") == chosen_subj]
 
-        # Tier 2: Topic Selector (Scoped to selected Tier 1 Subject)
-        avail_topics = sorted(list({c.get("topic", "General Topic") for c in subj_filtered}))
-        top_counts = {t: sum(1 for c in subj_filtered if c.get("topic") == t) for t in avail_topics}
+        avail_topics = sorted({c.get("topic", "General Topic") for c in subj_filtered})
+        top_counts = {topic: sum(1 for c in subj_filtered if c.get("topic") == topic) for topic in avail_topics}
         top_options = ["-- All Topics --"] + avail_topics
         if st.session_state.selected_topic not in top_options:
             st.session_state.selected_topic = "-- All Topics --"
-
-        def _fmt_topic(opt: str) -> str:
-            if opt == "-- All Topics --":
-                return f"📂 All Topics ({len(subj_filtered)})"
-            return f"📁 {opt} ({top_counts.get(opt, 0)})"
-
         if st.session_state.get("_sidebar_top_select") != st.session_state.selected_topic:
             st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
+
         st.selectbox(
             "Syllabus Topic",
             options=top_options,
-            format_func=_fmt_topic,
+            format_func=lambda opt: (
+                f"📂 All Topics ({len(subj_filtered)})" if opt == "-- All Topics --"
+                else f"📁 {opt} ({top_counts.get(opt, 0)})"
+            ),
             key="_sidebar_top_select",
             on_change=_cb_on_topic_change,
         )
 
         chosen_top = st.session_state.selected_topic
-        if chosen_top == "-- All Topics --":
-            filtered_cases = subj_filtered
-        else:
-            filtered_cases = [c for c in subj_filtered if c.get("topic") == chosen_top]
-
-        cabinet_filter = st.text_input(
-            "Filter cases",
-            placeholder="Filter by case title or G.R. number",
-            key="cabinet_filter",
-            label_visibility="collapsed",
+        folder_cases = (
+            subj_filtered if chosen_top == "-- All Topics --"
+            else [c for c in subj_filtered if c.get("topic") == chosen_top]
         )
-        if cabinet_filter.strip():
-            q_sub = cabinet_filter.strip().lower()
-            filtered_cases = [
-                c for c in filtered_cases
-                if q_sub in str(c.get("citation", "")).lower() or q_sub in str(c.get("lookup_key", "")).lower()
-            ]
 
-        st.markdown(f"**Cases in Folder ({len(filtered_cases)})**")
+        # The main search is global, so the persistent sidebar list mirrors every
+        # matching result across the library. With no query, it shows the complete
+        # case list for the selected subject/topic folder.
+        if query_str:
+            filtered_cases = [cases[idx] for idx, _score in ranked_pairs]
+            list_heading = f"Search Matches ({len(filtered_cases)})"
+        else:
+            filtered_cases = folder_cases
+            list_heading = f"Cases in Folder ({len(filtered_cases)})"
+
+        st.divider()
+        st.markdown(f"**{list_heading}**")
+        if query_str:
+            st.caption("Global results · ranked across all subjects and topics")
 
         if filtered_cases:
-            uid_list = [c["_uid"] for c in filtered_cases]
-            uid_to_label = {
-                c["_uid"]: f"{c.get('citation', 'Untitled Case')}"
-                for c in filtered_cases
-            }
-            if st.session_state.selected_lookup_key not in uid_list:
-                st.session_state.selected_lookup_key = uid_list[0]
-            if st.session_state.get("_sidebar_case_select") != st.session_state.selected_lookup_key:
-                st.session_state["_sidebar_case_select"] = st.session_state.selected_lookup_key
+            uid_list = [case["_uid"] for case in filtered_cases]
+            # Keep the radio selection synchronized with the active case whenever
+            # that case is present. During a search, the reader selection is not
+            # changed until the user actually clicks a result in this list.
+            if st.session_state.selected_lookup_key in uid_list:
+                radio_default = st.session_state.selected_lookup_key
+            else:
+                radio_default = uid_list[0]
+            if st.session_state.get("_sidebar_case_radio") not in uid_list or st.session_state.get("_sidebar_case_radio") != radio_default:
+                st.session_state["_sidebar_case_radio"] = radio_default
 
-            st.selectbox(
-                "Case",
+            uid_to_label = {
+                case["_uid"]: f"📄 {case.get('citation', 'Untitled Case')}"
+                for case in filtered_cases
+            }
+            st.radio(
+                "Select a case",
                 options=uid_list,
-                format_func=lambda u: uid_to_label.get(u, u),
-                key="_sidebar_case_select",
+                format_func=lambda uid: uid_to_label.get(uid, uid),
+                key="_sidebar_case_radio",
                 on_change=_cb_select_sidebar_case,
+                label_visibility="collapsed",
             )
         else:
-            st.info("No cases match that filter.")
-
+            if query_str:
+                st.info("No cases match this search. Try a broader phrase, party name, G.R. number, or doctrine.")
+            else:
+                st.info("No cases are available in this folder.")
 
 
 # --- 8. TOP INSTITUTIONAL MASTHEAD & COMPACT COMMAND BAR ---
@@ -1975,7 +2031,12 @@ mode_options = [
 ]
 size_options = ["Compact", "Standard", "Comfortable"]
 
-cmd_c1, cmd_c2, cmd_c3, cmd_c4 = st.columns([4.4, 1.65, 1.2, 1.05], gap="small")
+cmd_columns = st.columns(
+    [4.1, 1.55, 1.15, 1.0, 1.35] if st.session_state.focus_mode else [4.4, 1.65, 1.2, 1.05],
+    gap="small",
+)
+cmd_c1, cmd_c2, cmd_c3, cmd_c4 = cmd_columns[:4]
+cmd_c5 = cmd_columns[4] if st.session_state.focus_mode else None
 with cmd_c1:
     st.text_input(
         "Search jurisprudence",
@@ -2024,31 +2085,24 @@ with cmd_c4:
         use_container_width=True,
         help="Cycle through Light → Dark → Focus Light → Focus Dark → Light.",
     )
+if cmd_c5 is not None:
+    with cmd_c5:
+        st.button(
+            "🗄️ Show Cabinet",
+            key="restore_filing_cabinet_btn",
+            on_click=_cb_show_filing_cabinet,
+            use_container_width=True,
+            help="Bring back the left filing cabinet and clickable case list.",
+        )
 
 
 # --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
-query_str = st.session_state.active_search_query.strip()
-query_tokens = [t for t in re.split(r"\W+", query_str.lower()) if t]
-
 if query_str and bm25 and cases:
-    scores = bm25.get_scores(query_tokens)
-    ranked_pairs = []
-    for idx, base_score in enumerate(scores):
-        c_item = cases[idx]
-        haystack = (
-            f"{c_item.get('citation', '')} {c_item.get('subject', '')} "
-            f"{c_item.get('topic', '')} {c_item.get('digest', '')}"
-        ).lower()
-        exact_boost = 5.0 if query_str.lower() in haystack else 0.0
-        total_score = float(base_score) + exact_boost
-        if total_score > 0:
-            ranked_pairs.append((idx, total_score))
-
-    ranked_pairs.sort(key=lambda x: x[1], reverse=True)
 
     st.markdown(
         f"#### 🔎 Search results for *'{html.escape(query_str)}'* · {len(ranked_pairs)} matching cases"
     )
+    st.caption("Choose a matching case from the left Filing Cabinet to open it. The sidebar retains the complete ranked result list.")
 
     if not ranked_pairs:
         st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
@@ -2073,24 +2127,10 @@ if query_str and bm25 and cases:
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-            btn_c1, btn_c2, _ = st.columns([1.5, 2.0, 4.5])
-            with btn_c1:
-                st.button(
-                    "📖 Open Case Digest",
-                    key=f"open_search_{match_case['_uid']}",
-                    on_click=_cb_open_case_from_search,
-                    args=(
-                        match_case["_uid"],
-                        match_case.get("subject", "-- All Subjects --"),
-                        match_case.get("topic", "-- All Topics --"),
-                    ),
-                    use_container_width=True,
-                )
-            with btn_c2:
-                if quote_preview:
-                    with st.popover("📋 Copy Citation & Holding"):
-                        st.caption("Ready to paste into legal pleadings or notes:")
-                        st.code(f"{match_case.get('citation', '')}\n\n{quote_preview}", language="markdown")
+            if quote_preview:
+                with st.popover("📋 Copy Citation & Holding"):
+                    st.caption("Ready to paste into legal pleadings or notes:")
+                    st.code(f"{match_case.get('citation', '')}\n\n{quote_preview}", language="markdown")
             st.markdown("<div style='margin-bottom: 0.75rem;'></div>", unsafe_allow_html=True)
 
     st.stop()
