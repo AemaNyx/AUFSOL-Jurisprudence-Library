@@ -3,9 +3,12 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 import streamlit as st
 import streamlit.components.v1 as components
 from rank_bm25 import BM25Okapi
+
+APP_DIR = Path(__file__).resolve().parent
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
@@ -16,31 +19,30 @@ st.set_page_config(
 )
 
 # --- 2. SESSION STATE INITIALIZATION & SAFE CALLBACKS ---
-if "theme_mode" not in st.session_state:
+_DEFAULT_STATE = {
+    "theme_mode": "Light",
+    "focus_mode": False,
+    "study_mode": "📖 First-Time Read",
+    "font_scale": "Standard",
+    "selected_lookup_key": None,
+    "selected_subject": "-- All Subjects --",
+    "selected_topic": "-- All Topics --",
+    "active_search_query": "",
+    "scroll_to_anchor": "",
+}
+for _state_key, _default_value in _DEFAULT_STATE.items():
+    if _state_key not in st.session_state:
+        st.session_state[_state_key] = _default_value
+
+
+if st.session_state.theme_mode not in {"Light", "Dark"}:
     st.session_state.theme_mode = "Light"
-if "focus_mode" not in st.session_state:
-    st.session_state.focus_mode = False
-if "sidebar_hidden" not in st.session_state:
-    st.session_state.sidebar_hidden = False
-if "study_mode" not in st.session_state:
-    st.session_state.study_mode = "📖 First-Time Read"
-if "font_scale" not in st.session_state:
+if st.session_state.font_scale not in {"Compact", "Standard", "Comfortable"}:
     st.session_state.font_scale = "Standard"
-if "selected_lookup_key" not in st.session_state:
-    st.session_state.selected_lookup_key = None
-if "selected_subject" not in st.session_state:
-    st.session_state.selected_subject = "-- All Subjects --"
-if "selected_topic" not in st.session_state:
-    st.session_state.selected_topic = "-- All Topics --"
-if "active_search_query" not in st.session_state:
-    st.session_state.active_search_query = ""
-if "scroll_to_anchor" not in st.session_state:
-    st.session_state.scroll_to_anchor = ""
-
-
-# Pre-instantiation callbacks prevent StreamlitWidgetAlreadyInstantiatedError
-def _cb_clear_search():
-    st.session_state.active_search_query = ""
+if st.session_state.study_mode not in {
+    "📖 First-Time Read", "⚡ Exam & Recit Review", "🔎 Legal Research"
+}:
+    st.session_state.study_mode = "📖 First-Time Read"
 
 
 def _cb_open_case_from_search(uid: str, subj: str, top: str):
@@ -48,11 +50,12 @@ def _cb_open_case_from_search(uid: str, subj: str, top: str):
     st.session_state.selected_topic = top or "-- All Topics --"
     st.session_state.selected_lookup_key = uid
     st.session_state.active_search_query = ""
+    st.session_state["cabinet_filter"] = ""
     st.session_state.scroll_to_anchor = "reader-top-anchor"
 
 
 def _cb_select_sidebar_case():
-    chosen = st.session_state.get("_sidebar_case_radio")
+    chosen = st.session_state.get("_sidebar_case_select")
     if chosen:
         st.session_state.selected_lookup_key = chosen
         st.session_state.active_search_query = ""
@@ -72,24 +75,32 @@ def _cb_on_topic_change():
         st.session_state.selected_topic = chosen
 
 
-def _cb_toggle_cabinet():
-    if st.session_state.focus_mode:
-        st.session_state.focus_mode = False
-        st.session_state.sidebar_hidden = False
-    else:
-        st.session_state.sidebar_hidden = not st.session_state.sidebar_hidden
+def _cb_cycle_view_mode():
+    """Cycle through Light → Dark → Focus Light → Focus Dark → Light."""
+    sequence = [
+        ("Light", False),
+        ("Dark", False),
+        ("Light", True),
+        ("Dark", True),
+    ]
+    current = (st.session_state.theme_mode, st.session_state.focus_mode)
+    try:
+        next_index = (sequence.index(current) + 1) % len(sequence)
+    except ValueError:
+        next_index = 0
+    st.session_state.theme_mode, st.session_state.focus_mode = sequence[next_index]
 
 
-def _cb_toggle_focus():
-    st.session_state.focus_mode = not st.session_state.focus_mode
-
-
-def _cb_toggle_theme():
-    st.session_state.theme_mode = "Dark" if st.session_state.theme_mode == "Light" else "Light"
-
-
-def _cb_jump_to_section(anchor_id: str):
-    st.session_state.scroll_to_anchor = anchor_id
+def safe_external_url(value: Any) -> str:
+    """Only allow absolute HTTP(S) links in generated HTML."""
+    candidate = str(value or "").strip()
+    try:
+        parsed_url = urlparse(candidate)
+    except ValueError:
+        return ""
+    if parsed_url.scheme.lower() in {"http", "https"} and parsed_url.netloc:
+        return candidate
+    return ""
 
 
 def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -120,8 +131,10 @@ def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
 def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List[str]]]:
     """Loads all records from case_library/master_library.jsonl and builds BM25 index with 2-Tier metadata."""
     candidates = [
-        Path("case_library/master_library.jsonl"),
-        Path("master_library.jsonl"),
+        APP_DIR / "case_library" / "master_library.jsonl",
+        APP_DIR / "master_library.jsonl",
+        Path.cwd() / "case_library" / "master_library.jsonl",
+        Path.cwd() / "master_library.jsonl",
     ]
     cases: List[Dict[str, Any]] = []
     lib_path = next((p for p in candidates if p.exists()), None)
@@ -524,7 +537,7 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
 
 # --- 4B. AUTOMATED AUDIO CASE BRIEFING ENGINE (Edge Neural TTS: en-US-AndrewMultilingualNeural) ---
 DEFAULT_AUDIO_VOICE = "en-US-AndrewMultilingualNeural"
-AUDIO_DIR = Path("case_library/audio_briefs")
+AUDIO_DIR = APP_DIR / "case_library" / "audio_briefs"
 
 
 def clean_text_for_speech(text: str) -> str:
@@ -582,25 +595,18 @@ def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
 
     p_custom = case_entry.get("audio_primer")
     c_custom = case_entry.get("audio_chapter")
-    p_path = Path(p_custom) if (p_custom and Path(p_custom).exists()) else (AUDIO_DIR / f"{stem}_primer.mp3")
-    c_path = Path(c_custom) if (c_custom and Path(c_custom).exists()) else (AUDIO_DIR / f"{stem}_chapter.mp3")
+
+    def _resolve_custom_audio(raw_path: Any) -> Optional[Path]:
+        if not raw_path:
+            return None
+        candidate = Path(str(raw_path)).expanduser()
+        if not candidate.is_absolute():
+            candidate = APP_DIR / candidate
+        return candidate if candidate.is_file() else None
+
+    p_path = _resolve_custom_audio(p_custom) or (AUDIO_DIR / f"{stem}_primer.mp3")
+    c_path = _resolve_custom_audio(c_custom) or (AUDIO_DIR / f"{stem}_chapter.mp3")
     return p_path, c_path
-
-
-HIDDEN_AUDIO_SECTION_RE = re.compile(
-    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)?(?:Hidden\s+Audio|Audio\s+Synthesis|Audio\s+Briefing)|Spoken\s+Relevant\s+Law\s+Summary\s*:).*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def strip_hidden_audio_section(digest_text: str) -> str:
-    """Removes Section 8 (Hidden Audio Synthesis Metadata) so it never appears in printed DOCX casebooks or visual reader panes."""
-    if not digest_text:
-        return ""
-    m = HIDDEN_AUDIO_SECTION_RE.search(digest_text)
-    if m:
-        return digest_text[: m.start()].rstrip()
-    return digest_text
 
 
 def apply_phonetic_pronunciations(text: str, phonetic_guide: str) -> str:
@@ -1133,11 +1139,12 @@ def synthesize_edge_tts_mp3(
     rate: str = "+0%",
 ) -> Tuple[bool, str]:
     """Synthesizes an MP3 file using edge-tts (en-US-AndrewMultilingualNeural)."""
-    import asyncio
-    import edge_tts
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        import asyncio
+        import edge_tts
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         async def _run_tts():
             communicate = edge_tts.Communicate(text=script_text, voice=voice, rate=rate)
             await communicate.save(str(output_path))
@@ -1148,12 +1155,41 @@ def synthesize_edge_tts_mp3(
         finally:
             loop.close()
         return True, str(output_path)
+    except ImportError as exc:
+        return False, f"Audio generation requires the optional 'edge-tts' package. Install it with: pip install edge-tts ({exc})"
     except Exception as exc:
         return False, str(exc)
 
 
-# --- 5. THEME, STICKY NAVIGATOR, FLOATING CABINET & RESPONSIVE CSS ---
-def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_scale: str):
+def render_audio_briefing(
+    title: str,
+    description: str,
+    script_text: str,
+    output_path: Path,
+    widget_key: str,
+    spinner_text: str,
+) -> None:
+    """Render one audio player and one generate/regenerate action."""
+    st.markdown(f"**{title}**")
+    st.caption(description)
+    already_exists = output_path.is_file()
+    if already_exists:
+        st.audio(str(output_path), format="audio/mp3")
+
+    action = "Regenerate" if already_exists else "Generate"
+    if st.button(f"{action} audio", key=widget_key, use_container_width=True):
+        with st.spinner(spinner_text):
+            ok, message = synthesize_edge_tts_mp3(
+                script_text, output_path, voice=DEFAULT_AUDIO_VOICE
+            )
+        if ok:
+            st.rerun()
+        else:
+            st.error(f"Audio generation failed: {message}")
+
+
+# --- 5. THEME, STICKY NAVIGATOR & RESPONSIVE CSS ---
+def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
     is_dark = theme == "Dark"
 
     scale_map = {
@@ -1221,12 +1257,11 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
     css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
 
     sidebar_visibility_css = ""
-    if focus_mode or sidebar_hidden:
+    if focus_mode:
+        # Focus mode hides only the left filing cabinet. The right-hand section
+        # navigator remains rendered and sticky so document navigation is retained.
         sidebar_visibility_css = """
         section[data-testid="stSidebar"] { display: none !important; }
-        """
-    if focus_mode:
-        sidebar_visibility_css += """
         .reader-sheet { max-width: 840px !important; margin: 0 auto !important; }
         """
 
@@ -1262,6 +1297,15 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             padding-bottom: 4rem !important;
             max-width: 1460px !important;
         }}
+
+        /* Cohesive, quieter application chrome */
+        div[data-testid="stHorizontalBlock"] {{ gap: 0.9rem; }}
+        div[data-testid="stTextInput"] label,
+        div[data-testid="stSelectbox"] label {{ font-weight: 600 !important; }}
+        .stButton > button {{ min-height: 2.25rem !important; }}
+        div[data-testid="stExpander"] {{ border-color: var(--border-subtle) !important; border-radius: 9px !important; }}
+        div[data-testid="stExpander"] summary {{ font-weight: 600 !important; }}
+        section[data-testid="stSidebar"] {{ padding-top: 1rem !important; }}
 
         /* Ensure parent flex/grid containers allow position: sticky on the Right Navigator column */
         div[data-testid="stHorizontalBlock"] {{
@@ -1768,7 +1812,7 @@ def inject_custom_css(theme: str, focus_mode: bool, sidebar_hidden: bool, font_s
             margin-top: 0.5rem;
         }}
 
-        @media (max-width: 992px) {{
+        @media (max-width: 768px) {{
             .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
             div[data-testid="stColumn"]:has(#sticky-right-nav-marker) {{
                 position: static !important;
@@ -1799,19 +1843,14 @@ if cases and not st.session_state.selected_lookup_key:
 inject_custom_css(
     st.session_state.theme_mode,
     st.session_state.focus_mode,
-    st.session_state.sidebar_hidden,
     st.session_state.font_scale,
 )
 
 
 # --- 7. SIDEBAR: 2-TIER FILING CABINET (SUBJECT -> TOPIC -> CASES) ---
 with st.sidebar:
-    sb_hdr_col1, sb_hdr_col2 = st.columns([3.2, 1.2])
-    with sb_hdr_col1:
-        st.markdown("### 🗄️ Filing Cabinet")
-    with sb_hdr_col2:
-        st.button("◀ Hide", key="sidebar_close_btn", on_click=_cb_toggle_cabinet, use_container_width=True, help="Collapse the Left Filing Cabinet")
-    st.caption("2-Tier Jurisprudence Repository (Subject → Topic)")
+    st.markdown("### 🗄️ Filing Cabinet")
+    st.caption("Browse by subject, topic, or case")
 
     if not cases:
         st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator or import a `.docx` casebook.")
@@ -1828,10 +1867,11 @@ with st.sidebar:
                 return f"📚 All Subjects ({len(cases)})"
             return f"🏛️ {opt} ({subj_counts.get(opt, 0)})"
 
+        if st.session_state.get("_sidebar_subj_select") != st.session_state.selected_subject:
+            st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
         st.selectbox(
-            "Tier 1: Subject / Course",
+            "Subject / Course",
             options=subj_options,
-            index=subj_options.index(st.session_state.selected_subject),
             format_func=_fmt_subject,
             key="_sidebar_subj_select",
             on_change=_cb_on_subject_change,
@@ -1852,10 +1892,11 @@ with st.sidebar:
                 return f"📂 All Topics ({len(subj_filtered)})"
             return f"📁 {opt} ({top_counts.get(opt, 0)})"
 
+        if st.session_state.get("_sidebar_top_select") != st.session_state.selected_topic:
+            st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
         st.selectbox(
-            "Tier 2: Syllabus Topic",
+            "Syllabus Topic",
             options=top_options,
-            index=top_options.index(st.session_state.selected_topic),
             format_func=_fmt_topic,
             key="_sidebar_top_select",
             on_change=_cb_on_topic_change,
@@ -1868,15 +1909,16 @@ with st.sidebar:
             filtered_cases = [c for c in subj_filtered if c.get("topic") == chosen_top]
 
         cabinet_filter = st.text_input(
-            "Filter list by title or G.R. No.",
-            placeholder="e.g., Guevara or 25577",
+            "Filter cases",
+            placeholder="Filter by case title or G.R. number",
+            key="cabinet_filter",
             label_visibility="collapsed",
         )
         if cabinet_filter.strip():
             q_sub = cabinet_filter.strip().lower()
             filtered_cases = [
                 c for c in filtered_cases
-                if q_sub in c.get("citation", "").lower() or q_sub in c.get("lookup_key", "").lower()
+                if q_sub in str(c.get("citation", "")).lower() or q_sub in str(c.get("lookup_key", "")).lower()
             ]
 
         st.markdown(f"**Cases in Folder ({len(filtered_cases)})**")
@@ -1884,39 +1926,27 @@ with st.sidebar:
         if filtered_cases:
             uid_list = [c["_uid"] for c in filtered_cases]
             uid_to_label = {
-                c["_uid"]: f"📄 {c.get('citation', 'Untitled Case')}"
+                c["_uid"]: f"{c.get('citation', 'Untitled Case')}"
                 for c in filtered_cases
             }
             if st.session_state.selected_lookup_key not in uid_list:
                 st.session_state.selected_lookup_key = uid_list[0]
-            current_idx = uid_list.index(st.session_state.selected_lookup_key)
+            if st.session_state.get("_sidebar_case_select") != st.session_state.selected_lookup_key:
+                st.session_state["_sidebar_case_select"] = st.session_state.selected_lookup_key
 
-            st.radio(
-                "Select Case to Read",
+            st.selectbox(
+                "Case",
                 options=uid_list,
-                index=current_idx,
                 format_func=lambda u: uid_to_label.get(u, u),
-                key="_sidebar_case_radio",
+                key="_sidebar_case_select",
                 on_change=_cb_select_sidebar_case,
-                label_visibility="collapsed",
             )
         else:
             st.info("No cases match that filter.")
 
-        st.divider()
-        st.markdown("##### ⚙️ Reader Typography")
-        font_choice = st.radio(
-            "Typography Size",
-            options=["Compact", "Standard", "Comfortable"],
-            index=["Compact", "Standard", "Comfortable"].index(st.session_state.font_scale),
-            horizontal=True,
-        )
-        if font_choice != st.session_state.font_scale:
-            st.session_state.font_scale = font_choice
-            st.rerun()
 
 
-# --- 8. TOP INSTITUTIONAL MASTHEAD & REDESIGNED COMMAND BAR ---
+# --- 8. TOP INSTITUTIONAL MASTHEAD & COMPACT COMMAND BAR ---
 unique_subjects_count = len({c.get("subject", "General Jurisprudence") for c in cases})
 unique_topics_count = len({c.get("topic", "General Topic") for c in cases})
 masthead_html = (
@@ -1937,90 +1967,62 @@ masthead_html = (
 )
 st.markdown(masthead_html, unsafe_allow_html=True)
 
-# Redesigned Top Command Bar:
-# [1] Persistent Cabinet Toggle | [2] Universal Search Bar | [3] Clear Search | [4] Study Persona | [5] Text Scale | [6] Focus Mode | [7] Theme Toggle
-is_cabinet_closed = st.session_state.sidebar_hidden or st.session_state.focus_mode
-cab_btn_text = "🗄️ Show Cabinet" if is_cabinet_closed else "🗄️ Hide Cabinet"
+# Compact command bar: search + workflow + typography + sequential view mode.
+mode_options = [
+    "📖 First-Time Read",
+    "⚡ Exam & Recit Review",
+    "🔎 Legal Research",
+]
+size_options = ["Compact", "Standard", "Comfortable"]
 
-cmd_c1, cmd_c2, cmd_c3, cmd_c4, cmd_c5, cmd_c6, cmd_c7 = st.columns(
-    [1.25, 3.0, 0.55, 1.75, 1.25, 1.0, 0.95], gap="small"
-)
-
+cmd_c1, cmd_c2, cmd_c3, cmd_c4 = st.columns([4.4, 1.65, 1.2, 1.05], gap="small")
 with cmd_c1:
-    st.button(
-        cab_btn_text,
-        key="top_cabinet_toggle_btn",
-        on_click=_cb_toggle_cabinet,
-        use_container_width=True,
-        help="Show or hide the Left Filing Cabinet sidebar",
-    )
-
-with cmd_c2:
     st.text_input(
-        "Universal Lexical Search",
+        "Search jurisprudence",
         key="active_search_query",
-        placeholder="🔍 Search citations, G.R. numbers, subjects, topics, doctrines, Latin maxims...",
+        placeholder="Search case titles, G.R. numbers, subjects, topics, doctrines, or Latin maxims…",
         label_visibility="collapsed",
     )
-
-with cmd_c3:
-    st.button(
-        "✖",
-        key="top_clear_search_btn",
-        on_click=_cb_clear_search,
-        disabled=not bool(st.session_state.active_search_query.strip()),
-        use_container_width=True,
-        help="Clear active search query",
-    )
-
-with cmd_c4:
-    mode_options = [
-        "📖 First-Time Read",
-        "⚡ Exam & Recit Review",
-        "🔎 Legal Research",
-    ]
+with cmd_c2:
     selected_mode = st.selectbox(
-        "Workflow Mode",
+        "Reading workflow",
         options=mode_options,
         index=mode_options.index(st.session_state.study_mode),
         label_visibility="collapsed",
-        help="Switch layout between First-Time Deep Reading, Rapid Exam/Recit Review, and Legal Argument Research.",
+        help="Choose the reading lens for this case.",
     )
     if selected_mode != st.session_state.study_mode:
         st.session_state.study_mode = selected_mode
         st.rerun()
-
-with cmd_c5:
-    size_options = ["Compact", "Standard", "Comfortable"]
+with cmd_c3:
     top_font_choice = st.selectbox(
-        "Text Size",
+        "Reading text size",
         options=size_options,
         index=size_options.index(st.session_state.font_scale),
-        format_func=lambda s: f"🔤 {s}",
+        format_func=lambda value: f"Aa · {value}",
         label_visibility="collapsed",
     )
     if top_font_choice != st.session_state.font_scale:
         st.session_state.font_scale = top_font_choice
         st.rerun()
-
-with cmd_c6:
-    focus_btn_label = "🧘 Exit Focus" if st.session_state.focus_mode else "🧘 Focus"
-    st.button(
-        focus_btn_label,
-        key="top_focus_toggle_btn",
-        on_click=_cb_toggle_focus,
-        use_container_width=True,
-        help="Hide both sidebars and center the legal document",
+with cmd_c4:
+    view_sequence = [
+        ("Light", False, "☀️ Light"),
+        ("Dark", False, "🌙 Dark"),
+        ("Light", True, "☀️ Focus"),
+        ("Dark", True, "🌙 Focus"),
+    ]
+    current_view = (st.session_state.theme_mode, st.session_state.focus_mode)
+    current_view_index = next(
+        (i for i, view in enumerate(view_sequence) if view[:2] == current_view), 0
     )
-
-with cmd_c7:
-    theme_btn_label = "☀️ Light" if st.session_state.theme_mode == "Dark" else "🌙 Dark"
+    next_view_label = view_sequence[(current_view_index + 1) % len(view_sequence)][2]
     st.button(
-        theme_btn_label,
-        key="top_theme_toggle_btn",
-        on_click=_cb_toggle_theme,
+        next_view_label,
+        key="cycle_view_mode_btn",
+        on_click=_cb_cycle_view_mode,
         use_container_width=True,
-        help="Switch between Light Mode and Dark Mode",
+        help="Cycle through Light → Dark → Focus Light → Focus Dark → Light.",
     )
 
 
@@ -2044,16 +2046,9 @@ if query_str and bm25 and cases:
 
     ranked_pairs.sort(key=lambda x: x[1], reverse=True)
 
-    res_hdr_col1, res_hdr_col2 = st.columns([4.2, 1.0])
-    with res_hdr_col1:
-        st.markdown(f"#### 🔎 Lexical Search Results for *'{html.escape(query_str)}'* ({len(ranked_pairs)} matching cases)")
-    with res_hdr_col2:
-        st.button(
-            "✖ Clear Search",
-            key="results_clear_search_btn",
-            on_click=_cb_clear_search,
-            use_container_width=True,
-        )
+    st.markdown(
+        f"#### 🔎 Search results for *'{html.escape(query_str)}'* · {len(ranked_pairs)} matching cases"
+    )
 
     if not ranked_pairs:
         st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
@@ -2118,81 +2113,53 @@ meta = parsed["metadata"]
 quotes = parsed["quotes"]
 issues_list = parsed["issues"]
 
-# Mobile / Compact Case Switcher & Section Jumper
-with st.expander("📱 Quick Case & Section Jumper (Mobile / Tablet Navigation)", expanded=False):
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        all_uids = [c["_uid"] for c in cases]
-        all_labels = {
-            c["_uid"]: f"{c.get('citation', '')} [{c.get('subject', '')} | {c.get('topic', '')}]"
-            for c in cases
-        }
-        mob_uid = st.selectbox(
-            "Switch Case",
-            options=all_uids,
-            index=all_uids.index(active_case["_uid"]) if active_case["_uid"] in all_uids else 0,
-            format_func=lambda u: all_labels.get(u, u),
-        )
-        if mob_uid != active_case["_uid"]:
-            st.session_state.selected_lookup_key = mob_uid
-            st.session_state.scroll_to_anchor = "reader-top-anchor"
-            st.rerun()
-    with m_col2:
-        if sections:
-            sec_opts = ["-- Jump to Section --"] + [f"{s['num']}. {s['short_title']}" for s in sections]
-            chosen_mob_sec = st.selectbox("Jump to Section", options=sec_opts)
-            if chosen_mob_sec != "-- Jump to Section --":
-                idx_s = sec_opts.index(chosen_mob_sec) - 1
-                st.session_state.scroll_to_anchor = sections[idx_s]["anchor"]
-
-if st.session_state.focus_mode:
-    reader_container = st.container()
-    nav_container = None
-else:
-    reader_container, nav_container = st.columns([3.25, 1.15], gap="large")
+reader_container, nav_container = st.columns(
+    [3.15, 1.05] if st.session_state.focus_mode else [3.25, 1.15],
+    gap="large",
+)
 
 
 # --- 10B. PERSISTENT STICKY RIGHT SIDEBAR: STUDY NAVIGATOR ---
-if nav_container is not None:
-    with nav_container:
-        # Marker id '#sticky-right-nav-marker' activates CSS position: sticky on this entire column
-        toc_links_html = "".join(
-            f"<a class='toc-jump-link' href='#{html.escape(sec['anchor'])}' target='_self'>"
-            f"<span class='toc-sec-badge'>{html.escape(sec['num'])}</span>"
-            f"<span>{html.escape(sec['short_title'][:36] + ('...' if len(sec['short_title']) > 36 else ''))}</span>"
-            f"</a>"
-            for sec in sections
-        )
-        top_jump_html = (
-            "<a class='toc-jump-link' href='#reader-top-anchor' target='_self' style='margin-top:0.35rem; opacity:0.85;'>"
-            "<span class='toc-sec-badge'>↑</span><span>Back to Top of Case</span></a>"
-        )
-        st.markdown(
-            "<div id='sticky-right-nav-marker'></div>"
-            "<div class='navigator-card'>"
-            "<div class='navigator-title'>🧭 On This Case (Click to Jump)</div>"
-            f"<div class='toc-nav-list'>{toc_links_html}{top_jump_html}</div>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+with nav_container:
+    # Marker id '#sticky-right-nav-marker' activates CSS position: sticky on this entire column
+    toc_links_html = "".join(
+        f"<a class='toc-jump-link' href='#{html.escape(sec['anchor'])}' target='_self'>"
+        f"<span class='toc-sec-badge'>{html.escape(sec['num'])}</span>"
+        f"<span>{html.escape(sec['short_title'][:36] + ('...' if len(sec['short_title']) > 36 else ''))}</span>"
+        f"</a>"
+        for sec in sections
+    )
+    top_jump_html = (
+        "<a class='toc-jump-link' href='#reader-top-anchor' target='_self' style='margin-top:0.35rem; opacity:0.85;'>"
+        "<span class='toc-sec-badge'>↑</span><span>Back to Top of Case</span></a>"
+    )
+    st.markdown(
+        "<div id='sticky-right-nav-marker'></div>"
+        "<div class='navigator-card'>"
+        "<div class='navigator-title'>🧭 On This Case (Click to Jump)</div>"
+        f"<div class='toc-nav-list'>{toc_links_html}{top_jump_html}</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
-        with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
-            st.caption("Test your recall before looking at the holding:")
-            if issues_list:
-                st.markdown(f"**Primary Question:**\n{issues_list[0]}")
-            else:
-                st.markdown(f"**Case:** {active_case.get('citation', '')}")
-            if st.checkbox("Reveal Cold-Call Answer & Outcome", key="reveal_recit"):
-                ans = meta.get("cold_call") or meta.get("outcome") or "Refer to Section 6 and Section 6.5 in the digest."
-                st.success(ans)
+    with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
+        st.caption("Test your recall before looking at the holding:")
+        if issues_list:
+            st.markdown(f"**Primary Question:**\n{issues_list[0]}")
+        else:
+            st.markdown(f"**Case:** {active_case.get('citation', '')}")
+        if st.checkbox("Reveal Cold-Call Answer & Outcome", key="reveal_recit"):
+            ans = meta.get("cold_call") or meta.get("outcome") or "Refer to Section 6 and Section 6.5 in the digest."
+            st.success(ans)
 
-        with st.expander("📋 Copy Citation & Verbatim Quotes", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
-            cite_block = f"{active_case.get('citation', '')}"
-            if meta.get("citation_metadata"):
-                cite_block += f" ({meta['citation_metadata']})"
-            if quotes:
-                cite_block += "\n\n" + "\n\n".join(quotes[:2])
-            st.code(cite_block, language="markdown")
+    with st.expander("📋 Copy Citation & Verbatim Quotes", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
+        cite_block = f"{active_case.get('citation', '')}"
+        if meta.get("citation_metadata"):
+            cite_block += f" ({meta['citation_metadata']})"
+        if quotes:
+            cite_block += "\n\n" + "\n\n".join(quotes[:2])
+        st.code(cite_block, language="markdown")
+
 
 
 # --- 10A. CENTRAL READING PANE ---
@@ -2203,50 +2170,28 @@ with reader_container:
     primer_mp3_path, chapter_mp3_path = get_audio_file_paths(active_case)
     primer_script_txt, chapter_script_txt = build_audio_scripts_for_case(active_case)
 
-    with st.expander("🎧 Audio Case Briefings — Microsoft Edge Neural TTS (AndrewMultilingualNeural)", expanded=True):
+    with st.expander("🎧 Audio case briefings", expanded=False):
         aud_col1, aud_col2 = st.columns(2, gap="medium")
 
         with aud_col1:
-            st.markdown("**⚡ 1. 60–90s Cold-Call Primer**")
-            st.caption("9-Step Primary Syllabus Issue flow: Law → Trigger → Bridge → Issue → Arguments → Ruling → Ratio → Doctrine → Outcome.")
-            if primer_mp3_path.exists():
-                st.audio(str(primer_mp3_path), format="audio/mp3")
-                if st.button("🔄 Regenerate Primer MP3", key=f"regen_primer_{active_case['_uid']}", use_container_width=True):
-                    with st.spinner("Synthesizing 60–90s Primer with AndrewMultilingualNeural..."):
-                        ok_p, msg_p = synthesize_edge_tts_mp3(primer_script_txt, primer_mp3_path, voice=DEFAULT_AUDIO_VOICE)
-                        if ok_p:
-                            st.rerun()
-                        else:
-                            st.error(f"TTS Error: {msg_p}")
-            else:
-                if st.button("🔊 Generate & Play 60–90s Primer", key=f"gen_primer_{active_case['_uid']}", use_container_width=True):
-                    with st.spinner("Synthesizing 60–90s Primer with AndrewMultilingualNeural..."):
-                        ok_p, msg_p = synthesize_edge_tts_mp3(primer_script_txt, primer_mp3_path, voice=DEFAULT_AUDIO_VOICE)
-                        if ok_p:
-                            st.rerun()
-                        else:
-                            st.error(f"TTS Error: {msg_p}")
+            render_audio_briefing(
+                title="⚡ 1. 60–90s Cold-Call Primer",
+                description="9-step primary-issue flow: law, factual trigger, issue, arguments, ruling, ratio, doctrine, and outcome.",
+                script_text=primer_script_txt,
+                output_path=primer_mp3_path,
+                widget_key=f"audio_primer_{active_case['_uid']}",
+                spinner_text="Synthesizing the cold-call primer…",
+            )
 
         with aud_col2:
-            st.markdown("**📖 2. Complete Audio Chapter (Plain-Language Emphasis)**")
-            st.caption("13-Step Full Walkthrough: Resolves Primary Issue (Steps 1–9) + Transition + Secondary Issues, Fallo, Separate Opinions & Reckoning Point (Steps 10–13).")
-            if chapter_mp3_path.exists():
-                st.audio(str(chapter_mp3_path), format="audio/mp3")
-                if st.button("🔄 Regenerate Chapter MP3", key=f"regen_chap_{active_case['_uid']}", use_container_width=True):
-                    with st.spinner("Synthesizing Complete Plain-Language Chapter with AndrewMultilingualNeural..."):
-                        ok_c, msg_c = synthesize_edge_tts_mp3(chapter_script_txt, chapter_mp3_path, voice=DEFAULT_AUDIO_VOICE)
-                        if ok_c:
-                            st.rerun()
-                        else:
-                            st.error(f"TTS Error: {msg_c}")
-            else:
-                if st.button("🔊 Generate & Play Complete Audio Chapter", key=f"gen_chap_{active_case['_uid']}", use_container_width=True):
-                    with st.spinner("Synthesizing Complete Plain-Language Chapter with AndrewMultilingualNeural..."):
-                        ok_c, msg_c = synthesize_edge_tts_mp3(chapter_script_txt, chapter_mp3_path, voice=DEFAULT_AUDIO_VOICE)
-                        if ok_c:
-                            st.rerun()
-                        else:
-                            st.error(f"TTS Error: {msg_c}")
+            render_audio_briefing(
+                title="📖 2. Complete Audio Chapter",
+                description="Full walkthrough of the primary issue, secondary issues, fallo, separate opinions, and final reckoning point.",
+                script_text=chapter_script_txt,
+                output_path=chapter_mp3_path,
+                widget_key=f"audio_chapter_{active_case['_uid']}",
+                spinner_text="Synthesizing the complete audio chapter…",
+            )
 
         with st.expander("📜 View Spoken Audio Transcripts (Primer & Plain-Language Chapter)", expanded=False):
             t_tab1, t_tab2 = st.tabs(["⚡ 60–90s Primer Script", "📖 Complete Chapter Script"])
@@ -2258,8 +2203,8 @@ with reader_container:
     subj_label = active_case.get("subject", "General Jurisprudence") or "General Jurisprudence"
     topic_label = active_case.get("topic", "General Topic") or "General Topic"
     gr_label = active_case.get("lookup_key", "")
-    date_cat = active_case.get("date_cataloged", "Unknown")[:10]
-    src_url = active_case.get("url", "")
+    date_cat = str(active_case.get("date_cataloged") or "Unknown")[:10]
+    src_url = safe_external_url(active_case.get("url", ""))
     source_link_html = (
         f"<a class='source-link' href='{html.escape(src_url)}' target='_blank' rel='noopener noreferrer'>🔗 View Original Supreme Court Decision ↗</a>"
         if src_url
@@ -2330,7 +2275,7 @@ with reader_container:
     )
     st.markdown(reader_html, unsafe_allow_html=True)
 
-# Execute smooth JavaScript scroll & persistent floating Left Cabinet pill in parent DOM
+# Execute smooth JavaScript scroll for section navigation and case changes.
 scroll_target_id = st.session_state.scroll_to_anchor
 st.session_state.scroll_to_anchor = ""
 
@@ -2340,7 +2285,7 @@ components.html(
     (function() {{
         const parentDoc = window.parent.document;
 
-        // 1. Handle programmatic smooth scroll if triggered by mobile dropdown or case switch
+        // 1. Handle programmatic smooth scroll after a case selection
         const targetId = {json.dumps(scroll_target_id)};
         if (targetId) {{
             const el = parentDoc.getElementById(targetId);
@@ -2367,41 +2312,6 @@ components.html(
             }}
         }});
 
-        // 3. Create or update persistent floating Left Sidebar toggle pill (bottom-left corner)
-        let floatBtn = parentDoc.getElementById('persistent-cabinet-fab');
-        if (!floatBtn) {{
-            floatBtn = parentDoc.createElement('button');
-            floatBtn.id = 'persistent-cabinet-fab';
-            parentDoc.body.appendChild(floatBtn);
-        }}
-        const isClosed = {json.dumps(is_cabinet_closed)};
-        const isDark = {json.dumps(st.session_state.theme_mode == "Dark")};
-        floatBtn.innerText = isClosed ? '🗄️ Open Filing Cabinet' : '◀ Hide Cabinet';
-        floatBtn.title = 'Click to show or hide the Left Filing Cabinet sidebar anywhere on the page';
-        Object.assign(floatBtn.style, {{
-            position: 'fixed',
-            bottom: '22px',
-            left: '22px',
-            zIndex: '99999',
-            padding: '9px 15px',
-            borderRadius: '999px',
-            backgroundColor: isDark ? '#1E293B' : '#172C3F',
-            color: '#FFFFFF',
-            border: '2px solid #C6A66A',
-            fontFamily: "'Inter', sans-serif",
-            fontWeight: '600',
-            fontSize: '13px',
-            cursor: 'pointer',
-            boxShadow: '0 4px 14px rgba(0,0,0,0.28)',
-            transition: 'all 0.15s ease'
-        }});
-        floatBtn.onclick = function() {{
-            const buttons = Array.from(parentDoc.querySelectorAll('button'));
-            const topToggle = buttons.find(b => b.innerText.includes('Show Cabinet') || b.innerText.includes('Hide Cabinet'));
-            if (topToggle) {{
-                topToggle.click();
-            }}
-        }};
     }})();
     </script>
     """,
