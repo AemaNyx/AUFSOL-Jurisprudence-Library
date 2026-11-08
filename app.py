@@ -1500,27 +1500,32 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
     }
     .workspace-rule { border-bottom:1px solid var(--border); margin:.15rem 0 1rem; }
 
-    /* Search results: compact action rail, vertically balanced with each result card. */
-    .search-heading {
-      font-family:var(--font-display) !important; font-size:2.05rem;
-      font-weight:600; line-height:1.05; color:var(--text-primary) !important;
-      margin:.4rem 0 .18rem;
-    }
-    .search-summary {
-      color:var(--text-muted) !important; font:500 .82rem var(--font-ui);
-      margin:.15rem 0 .85rem; letter-spacing:.01em;
-    }
+    /* Search results: a deliberate two-part row with a readable action rail. */
     div[data-testid="stHorizontalBlock"]:has(.search-card) {
-      align-items:center !important;
-      gap:.72rem !important;
-      margin:.48rem 0 .62rem !important;
+      display:flex !important;
+      flex-direction:row !important;
+      flex-wrap:nowrap !important;
+      align-items:stretch !important;
+      gap:.82rem !important;
+      margin:.62rem 0 .82rem !important;
     }
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child,
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child {
       display:flex !important;
+      flex:0 0 136px !important;
+      width:136px !important;
+      min-width:136px !important;
+      max-width:136px !important;
       align-items:center !important;
       justify-content:center !important;
       align-self:stretch !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:last-child,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:last-child {
+      flex:1 1 0% !important;
+      width:auto !important;
+      min-width:0 !important;
+      max-width:none !important;
     }
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child > div,
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child > div {
@@ -1530,33 +1535,64 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       justify-content:center !important;
     }
     .search-card {
-      background:var(--bg-surface); border:1px solid var(--border);
-      border-left:2px solid var(--accent); border-radius:9px;
-      padding:.95rem 1.2rem 1rem; margin:0 !important;
-      min-height:108px; display:flex; flex-direction:column; justify-content:center;
+      position:relative;
+      background:var(--bg-surface);
+      border:1px solid var(--border);
+      border-left:3px solid var(--accent);
+      border-radius:10px;
+      padding:1.05rem 1.35rem 1.1rem;
+      margin:0 !important;
+      min-height:116px;
+      display:flex;
+      flex-direction:column;
+      justify-content:center;
       box-shadow:var(--shadow);
-      transition:border-color .14s ease, box-shadow .14s ease, transform .14s ease;
+      transition:border-color .16s ease, box-shadow .16s ease, transform .16s ease;
     }
     .search-card:hover {
-      border-color:color-mix(in srgb, var(--accent) 55%, var(--border)) !important;
+      border-color:color-mix(in srgb, var(--accent) 58%, var(--border)) !important;
       box-shadow:var(--shadow-hover, var(--shadow));
       transform:translateY(-1px);
     }
-    /* Small, consistent Open case control; it is intentionally not stretched to card width. */
+    /* Open-case stays a clear, horizontal action, never a narrow vertical label. */
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
-      width:100% !important; min-width:0 !important; min-height:2.55rem !important;
-      padding:.35rem .35rem !important; white-space:nowrap !important;
-      font-size:.76rem !important; line-height:1.15 !important;
-      background:var(--accent-soft) !important;
-      border:1px solid color-mix(in srgb, var(--accent) 48%, var(--border)) !important;
-      color:var(--text-primary) !important;
-      border-radius:7px !important;
+      display:flex !important;
+      align-items:center !important;
+      justify-content:center !important;
+      width:100% !important;
+      min-width:120px !important;
+      max-width:136px !important;
+      height:46px !important;
+      min-height:46px !important;
+      padding:.55rem .7rem !important;
+      white-space:nowrap !important;
+      word-break:keep-all !important;
+      overflow-wrap:normal !important;
+      background:var(--button-bg) !important;
+      border:1px solid var(--border) !important;
+      color:var(--button-text) !important;
+      border-radius:8px !important;
+      font-size:.82rem !important;
+      font-weight:700 !important;
+      line-height:1 !important;
+      box-shadow:var(--shadow) !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button p,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button p,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button span,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button span {
+      white-space:nowrap !important;
+      word-break:keep-all !important;
+      overflow-wrap:normal !important;
+      margin:0 !important;
     }
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button:hover,
     div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button:hover {
-      background:var(--accent) !important; border-color:var(--accent) !important;
-      color:#131313 !important;
+      background:var(--accent) !important;
+      border-color:var(--accent) !important;
+      color:#141314 !important;
+      transform:translateY(-1px);
     }
     .search-card-topline { display:flex; align-items:center; gap:.55rem; margin-bottom:.34rem; }
     .search-result-index {
@@ -1738,7 +1774,26 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       .search-card { padding:.85rem .9rem; min-height:96px; }
       .search-card-title { font-size:1.2rem; }
       .search-snippet { font-size:.82rem; }
-      div[data-testid="stHorizontalBlock"]:has(.search-card) { gap:.45rem !important; }
+      div[data-testid="stHorizontalBlock"]:has(.search-card) {
+        flex-direction:row !important;
+        flex-wrap:nowrap !important;
+        gap:.45rem !important;
+      }
+      div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child,
+      div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child {
+        flex:0 0 96px !important;
+        width:96px !important;
+        min-width:96px !important;
+        max-width:96px !important;
+      }
+      div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
+      div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
+        min-width:88px !important;
+        height:42px !important;
+        min-height:42px !important;
+        padding:.4rem .3rem !important;
+        font-size:.68rem !important;
+      }
     }
     """
 
@@ -1980,7 +2035,7 @@ if query_str and cases:
         unsafe_allow_html=True,
     )
     st.markdown(
-        f"<div class='search-summary'>Showing the most relevant matches · {min(len(ranked_pairs), 15)} displayed · Filing Cabinet synchronized</div>",
+        f"<div class='search-summary'>Select <strong>Open case</strong> beside any result to load its full digest. Results are ranked by relevance and mirrored in the Filing Cabinet.</div>",
         unsafe_allow_html=True,
     )
 
@@ -1996,10 +2051,10 @@ if query_str and cases:
 
             # Keep the action on the left, but make it a compact control aligned
             # to the vertical center of the case card. The full card remains readable.
-            action_col, card_col = st.columns([0.72, 7.0], gap="small")
+            action_col, card_col = st.columns([1.35, 7.0], gap="small")
             with action_col:
                 st.button(
-                    "Open case",
+                    "↗  Open case",
                     key=f"open_search_case_{result_number}_{case_index}",
                     on_click=_cb_open_search_case,
                     args=(case_uid,),
