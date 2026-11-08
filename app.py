@@ -184,8 +184,25 @@ def clean_stray_asterisks(text: str) -> str:
     return s.strip()
 
 
+HIDDEN_AUDIO_SECTION_RE = re.compile(
+    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)(?:Hidden\s+Audio\s+Synthesis|Audio\s+Synthesis\s*&\s*Socratic\s+Bridge|Audio\s+Briefing\s+Metadata).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_hidden_audio_section(digest_text: str) -> str:
+    """Removes Section 8 (Hidden Audio Synthesis Metadata) so it never appears in printed DOCX casebooks or visual reader panes."""
+    if not digest_text:
+        return ""
+    m = HIDDEN_AUDIO_SECTION_RE.search(digest_text)
+    if m:
+        return digest_text[: m.start()].rstrip()
+    return digest_text
+
+
 def parse_digest_structure(digest_text: str) -> Dict[str, Any]:
-    lines = digest_text.splitlines()
+    printable_digest = strip_hidden_audio_section(digest_text)
+    lines = printable_digest.splitlines()
     sections: List[Dict[str, Any]] = []
     metadata_map: Dict[str, str] = {}
     quotes: List[str] = []
@@ -526,11 +543,57 @@ def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
     return p_path, c_path
 
 
+HIDDEN_AUDIO_SECTION_RE = re.compile(
+    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)(?:Hidden\s+Audio\s+Synthesis|Audio\s+Synthesis\s*&\s*Socratic\s+Bridge|Audio\s+Briefing\s+Metadata).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def strip_hidden_audio_section(digest_text: str) -> str:
+    """Removes Section 8 (Hidden Audio Synthesis Metadata) so it never appears in printed DOCX casebooks or visual reader panes."""
+    if not digest_text:
+        return ""
+    m = HIDDEN_AUDIO_SECTION_RE.search(digest_text)
+    if m:
+        return digest_text[: m.start()].rstrip()
+    return digest_text
+
+
+def apply_phonetic_pronunciations(text: str, phonetic_guide: str) -> str:
+    """Applies semicolon-separated 'Term = Phonetic' replacements from Section 8 before TTS synthesis."""
+    if not text or not phonetic_guide or phonetic_guide.strip().lower() in ("none", "n/a", "not expressly stated in the decision."):
+        return text
+    out = text
+    for pair in re.split(r"[;\n]+", phonetic_guide):
+        if "=" in pair:
+            term, phon = pair.split("=", 1)
+            term = term.strip(" `*\"'")
+            phon = phon.strip(" `*\"'")
+            if len(term) >= 3 and phon:
+                out = re.sub(rf"\b{re.escape(term)}\b", phon, out, flags=re.IGNORECASE)
+    return out
+
+
 def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     """
-    Builds two spoken scripts for Microsoft Edge Neural TTS (en-US-AndrewMultilingualNeural):
-      1. primer_script: 60-90 Second Cold-Call Primer
-      2. chapter_script: Complete Full-Text Substitute Audio Chapter with Plain-Language & Plain-Explanation Emphasis
+    Builds two spoken scripts for Microsoft Edge Neural TTS (en-US-AndrewMultilingualNeural)
+    following the 9-Step (Cold-Call Primer) and 13-Step (Complete Audio Chapter) architecture:
+      Steps 1-9 (Shared by Primer & Chapter):
+        1. Introduction of Subject (Tier 1), Topic (Tier 2), and Relevant Law for Primary Syllabus Issue(s)
+        2. Factual Trigger related to Primary Syllabus Issue(s)
+        3. How the Factual Trigger is related to the Primary Syllabus Issue(s)
+        4. Explanation of the Primary Syllabus Issue(s)
+        5. Arguments of Petitioner and Respondent in the context of the Primary Syllabus Issue(s)
+        6. Ruling of the Court related to the Primary Syllabus Issue(s)
+        7. Synthesis of resolving the Primary Syllabus Issue(s) via Step-by-Step Ratio Decidendi
+        8. Doctrine Identifier relating to the final caselaw rule established/applied by the Court
+        9. Final Outcome of the case in plain language
+      Steps 10-13 (Chapter Only, after explicit spoken transition):
+        - Audio Transition: States that the main topic of contention is resolved and introduces remaining case details
+        10. All other related issues in the case not yet discussed (plus full chronological storyboard context)
+        11. Final Disposition (Fallo)
+        12. Separate Opinions (if any)
+        13. Final Review of the main reckoning point of the case
     """
     citation = case_entry.get("citation", "Untitled Case")
     subject = case_entry.get("subject") or "General Jurisprudence"
@@ -539,12 +602,8 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
 
     fields: Dict[str, str] = {}
     timeline_events: List[str] = []
-    issues_list: List[str] = []
+    issues_raw: List[Dict[str, Any]] = []
     issue_blocks: List[Dict[str, str]] = []
-    plain_explanations: List[str] = []
-    short_answers: List[str] = []
-    ratios: List[str] = []
-    golden_quotes: List[str] = []
     pet_args: List[str] = []
     resp_args: List[str] = []
     spotlight_extra: List[str] = []
@@ -554,7 +613,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     current_issue_block: Dict[str, str] = {}
 
     sec_re = re.compile(
-        r"^(?:#{1,4}\s*)?(?:\*\*)?([1-7](?:\.5)?|[IVXLCDM]{1,6})[.)]?\s+(.+?)(?:\*\*)?\s*$",
+        r"^(?:#{1,4}\s*)?(?:\*\*)?([1-8](?:\.5)?|[IVXLCDM]{1,6})[.)]?\s+(.+?)(?:\*\*)?\s*$",
         re.IGNORECASE,
     )
 
@@ -565,10 +624,13 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
 
         s_no_hash = re.sub(r"^#{1,4}\s*", "", s).strip("* ").strip()
         m_sec = sec_re.match(s_no_hash)
-        if m_sec and len(s_no_hash) < 110 and not s_no_hash.lower().startswith("whether "):
+        if m_sec and len(s_no_hash) < 120 and not s_no_hash.lower().startswith("whether "):
             sec_id = m_sec.group(1).upper()
             sec_title_low = m_sec.group(2).lower()
-            if "6.5" in sec_id or "spotlight" in sec_title_low or "subject-specific" in sec_title_low:
+            if sec_id == "8" or "hidden audio" in sec_title_low or "socratic bridge" in sec_title_low:
+                current_sec = "8"
+                continue
+            elif "6.5" in sec_id or "spotlight" in sec_title_low or "subject-specific" in sec_title_low:
                 current_sec = "6.5"
                 continue
             elif "header" in sec_title_low or "caption" in sec_title_low or sec_id in ("1", "I"):
@@ -596,6 +658,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         s_unbold = _strip_md_and_bullets(s)
         low = s_unbold.lower()
 
+        # Standard Sections 1-7 & 6.5 fields
         if low.startswith("concise recognizable title:"):
             fields["concise_title"] = s_unbold.split(":", 1)[1].strip()
             continue
@@ -614,8 +677,14 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         elif low.startswith("primary topic hierarchy:"):
             fields["primary_hierarchy"] = s_unbold.split(":", 1)[1].strip()
             continue
+        elif low.startswith("secondary topic hierarchy"):
+            fields["secondary_hierarchy"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
+            continue
         elif low.startswith("full text of governing"):
             fields["governing_law"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
+            continue
+        elif low.startswith("historical landmark rule:"):
+            fields["historical_rule"] = s_unbold.split(":", 1)[1].strip()
             continue
         elif low.startswith("factual trigger"):
             fields["factual_trigger"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
@@ -639,7 +708,35 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
             fields["outcome"] = s_unbold.split(":", 1)[1].strip()
             continue
 
-        if current_sec == "3":
+        # Hidden Section 8 Audio Synthesis fields
+        elif low.startswith("spoken relevant law summary:"):
+            fields["spoken_law_summary"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("trigger-to-issue bridge:"):
+            fields["trigger_bridge"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("primary issue spoken explanation:"):
+            fields["primary_issue_explanation"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("primary issue arguments summary:"):
+            fields["primary_args_summary"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("doctrine identifier"):
+            fields["doctrine_identifier"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
+        elif low.startswith("chapter transition bridge:"):
+            fields["chapter_transition"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("final reckoning point:"):
+            fields["final_reckoning"] = s_unbold.split(":", 1)[1].strip()
+            continue
+        elif low.startswith("phonetic pronunciation guide:"):
+            fields["phonetic_guide"] = s_unbold.split(":", 1)[1].strip()
+            continue
+
+        if current_sec == "2" and not fields.get("governing_law") and not low.startswith("assigned"):
+            fields["governing_law"] = (fields.get("governing_law", "") + " " + s_unbold).strip()
+        elif current_sec == "3":
             timeline_events.append(s_unbold)
         elif current_sec == "4":
             if re.match(r"^A\.\s*Petitioner", s_unbold, re.IGNORECASE):
@@ -653,12 +750,18 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         elif current_sec == "5":
             if low.startswith("recitation-ready question:"):
                 q_txt = s_unbold.split(":", 1)[1].strip()
-                if issues_list:
-                    issues_list[-1] = f"{issues_list[-1]} Specifically: {q_txt}"
+                if issues_raw:
+                    issues_raw[-1]["recit_q"] = q_txt
                 else:
-                    issues_list.append(q_txt)
+                    issues_raw.append({"text": q_txt, "recit_q": q_txt, "is_primary": True})
             else:
-                issues_list.append(s_unbold)
+                is_sec_tag = bool(re.search(r"\[\s*(?:Procedural|Secondary)", s, re.IGNORECASE))
+                is_prim_tag = bool(re.search(r"\[\s*PRIMARY\s+SYLLABUS\s+ISSUE\s*\]", s, re.IGNORECASE))
+                issues_raw.append({
+                    "text": s_unbold,
+                    "recit_q": "",
+                    "is_primary": True if is_prim_tag else (False if is_sec_tag else (len(issues_raw) == 0)),
+                })
         elif current_sec == "6":
             m_sub = re.match(r"^\(?([a-d])\)?\s*[^:]{2,55}:\s*(.*)$", s_unbold, re.IGNORECASE)
             if m_sub:
@@ -668,23 +771,21 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
                     if current_issue_block:
                         issue_blocks.append(current_issue_block)
                     current_issue_block = {"a": sub_val}
-                    short_answers.append(sub_val)
                 elif sub_letter == "b":
                     current_issue_block["b"] = sub_val
-                    ratios.append(sub_val)
                 elif sub_letter == "c":
                     current_issue_block["c"] = sub_val
-                    golden_quotes.append(sub_val)
                 elif sub_letter == "d":
                     current_issue_block["d"] = sub_val
-                    plain_explanations.append(sub_val)
             else:
                 if "d" in current_issue_block:
                     current_issue_block["d"] += " " + s_unbold
+                elif "c" in current_issue_block and "d" not in current_issue_block:
+                    current_issue_block["c"] += " " + s_unbold
                 elif "b" in current_issue_block:
                     current_issue_block["b"] += " " + s_unbold
-                else:
-                    ratios.append(s_unbold)
+                elif "a" in current_issue_block:
+                    current_issue_block["a"] += " " + s_unbold
         elif current_sec == "6.5":
             if not low.startswith("assigned course"):
                 spotlight_extra.append(s_unbold)
@@ -692,136 +793,294 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     if current_issue_block:
         issue_blocks.append(current_issue_block)
 
+    # Pair issues from Section 5 with their verdict blocks from Section 6
+    max_issues = max(len(issues_raw), len(issue_blocks))
+    paired_issues: List[Dict[str, Any]] = []
+    for idx in range(max_issues):
+        iss_meta = issues_raw[idx] if idx < len(issues_raw) else {
+            "text": issue_blocks[idx].get("a", f"Issue {idx + 1}"),
+            "recit_q": "",
+            "is_primary": (idx == 0),
+        }
+        blk = issue_blocks[idx] if idx < len(issue_blocks) else {}
+        a_str = blk.get("a", "")
+        if re.search(r"\[\s*PRIMARY\s+SYLLABUS\s+ISSUE\s*\]", a_str, re.IGNORECASE):
+            iss_meta["is_primary"] = True
+        elif re.search(r"\[\s*(?:Procedural|Secondary)", a_str, re.IGNORECASE) and idx > 0:
+            iss_meta["is_primary"] = False
+        paired_issues.append({
+            "index": idx + 1,
+            "is_primary": iss_meta["is_primary"],
+            "question": iss_meta.get("text", ""),
+            "recit_q": iss_meta.get("recit_q", ""),
+            "a": blk.get("a", ""),
+            "b": blk.get("b", ""),
+            "c": blk.get("c", ""),
+            "d": blk.get("d", ""),
+        })
+
+    primary_list = [p for p in paired_issues if p["is_primary"]]
+    if not primary_list and paired_issues:
+        primary_list = [paired_issues[0]]
+        paired_issues[0]["is_primary"] = True
+    secondary_list = [p for p in paired_issues if not p["is_primary"]]
+
+    # --- BUILD SHARED CORE ELEMENTS (STEPS 1 TO 9) ---
     title_spoken = clean_text_for_speech(fields.get("concise_title") or citation)
     subj_spoken = clean_text_for_speech(subject)
     top_spoken = clean_text_for_speech(topic)
+    hierarchy_spoken = clean_text_for_speech(fields.get("primary_hierarchy", ""))
+    gov_law_full = clean_text_for_speech(fields.get("governing_law", ""))
+    spoken_law_summary = clean_text_for_speech(
+        fields.get("spoken_law_summary")
+        or (gov_law_full[:380] if gov_law_full else hierarchy_spoken or f"Philippine jurisprudence under {subj_spoken}, {top_spoken}.")
+    )
 
+    # Step 2: Factual Trigger
     trigger_spoken = clean_text_for_speech(
         fields.get("factual_trigger")
-        or (" ".join(timeline_events[:2]) if timeline_events else "See case facts.")
+        or (" ".join(timeline_events[:2]) if timeline_events else "See the operative facts of the decision.")
     )
-    primary_issue_spoken = clean_text_for_speech(
-        issues_list[0] if issues_list else (short_answers[0] if short_answers else "Whether the challenged act or ruling was valid.")
-    )
-    verdict_spoken = clean_text_for_speech(
-        short_answers[0] if short_answers else (ratios[0][:280] if ratios else "")
-    )
-    plain_exp_spoken = clean_text_for_speech(
-        plain_explanations[0] if plain_explanations else ""
-    )
-    cold_call_spoken = clean_text_for_speech(fields.get("cold_call", ""))
+
+    # Step 4: Primary Issue(s) & Explanation
+    prim_questions_spoken = []
+    for p in primary_list:
+        q_base = clean_text_for_speech(p["recit_q"] or p["question"] or p["a"])
+        if q_base:
+            prim_questions_spoken.append(q_base)
+    prim_issue_question_str = " ".join(prim_questions_spoken) or "Whether the challenged act or ruling was valid under the governing law."
+    prim_issue_expl_spoken = clean_text_for_speech(fields.get("primary_issue_explanation", ""))
+
+    # Step 3: How the Factual Trigger is related to the Primary Syllabus Issue(s)
+    if fields.get("trigger_bridge"):
+        trigger_bridge_spoken = clean_text_for_speech(fields["trigger_bridge"])
+    else:
+        posture_sub = clean_text_for_speech(fields.get("posture", ""))
+        if posture_sub:
+            trigger_bridge_spoken = (
+                f"This factual trigger led directly to the conflict before the Supreme Court via {posture_sub}, "
+                f"forcing the Court to resolve the primary syllabus question of {prim_issue_question_str}"
+            )
+        else:
+            trigger_bridge_spoken = (
+                f"Because of this factual trigger, the controversy squarely placed before the Supreme Court the primary syllabus issue of {prim_issue_question_str}"
+            )
+
+    # Step 5: Arguments of Petitioner & Respondent in context of Primary Syllabus Issue(s)
+    pet_full_spoken = " ".join(clean_text_for_speech(x) for x in pet_args if "not expressly stated" not in x.lower())
+    resp_full_spoken = " ".join(clean_text_for_speech(x) for x in resp_args if "not expressly stated" not in x.lower())
+    if fields.get("primary_args_summary"):
+        args_primer_spoken = clean_text_for_speech(fields["primary_args_summary"])
+    else:
+        p_short = clean_text_for_speech(pet_args[0]) if pet_args else "the challenged act or ruling was invalid"
+        r_short = clean_text_for_speech(resp_args[0]) if resp_args else "the challenged act or ruling was valid and lawful"
+        args_primer_spoken = f"On this primary issue, the Petitioner argued that {p_short} Conversely, the Respondent countered that {r_short}"
+
+    # Step 6: Ruling of the Court related to Primary Syllabus Issue(s)
+    prim_rulings_primer = []
+    prim_rulings_chapter = []
+    for p in primary_list:
+        a_clean = clean_text_for_speech(p["a"])
+        d_clean = clean_text_for_speech(p["d"])
+        if a_clean and d_clean:
+            prim_rulings_primer.append(f"{a_clean} In plain language: {d_clean}")
+            prim_rulings_chapter.append(f"{a_clean} Explained in plain, everyday terms: {d_clean}")
+        elif a_clean:
+            prim_rulings_primer.append(a_clean)
+            prim_rulings_chapter.append(a_clean)
+        elif d_clean:
+            prim_rulings_primer.append(d_clean)
+            prim_rulings_chapter.append(d_clean)
+    ruling_primer_str = " ".join(prim_rulings_primer) or clean_text_for_speech(fields.get("outcome", ""))
+    ruling_chapter_str = " ".join(prim_rulings_chapter) or ruling_primer_str
+
+    # Step 7: Synthesis of resolving the Primary Syllabus Issue(s) using Step-by-Step Ratio Decidendi
+    prim_ratios_primer = []
+    prim_ratios_chapter = []
+    for p in primary_list:
+        b_clean = clean_text_for_speech(p["b"])
+        c_clean = clean_text_for_speech(p["c"])
+        if b_clean:
+            prim_ratios_primer.append(b_clean)
+            chap_ratio_item = f"Step-by-Step Ratio Decidendi: {b_clean}"
+            if c_clean:
+                chap_ratio_item += f" In the exact verbatim words of the Supreme Court: {c_clean}"
+            prim_ratios_chapter.append(chap_ratio_item)
+    ratio_primer_str = " ".join(prim_ratios_primer) or clean_text_for_speech(fields.get("cold_call", ""))
+    ratio_chapter_str = " ".join(prim_ratios_chapter) or ratio_primer_str
+
+    # Step 8: Doctrine Identifier relating to the final caselaw rule
+    doc_id_spoken = clean_text_for_speech(fields.get("doctrine_identifier", ""))
+    req_spoken = clean_text_for_speech(fields.get("requisites", ""))
     magic_spoken = clean_text_for_speech(fields.get("magic_words", ""))
+    first_quote_spoken = clean_text_for_speech(primary_list[0]["c"]) if (primary_list and primary_list[0].get("c")) else ""
+
+    doctrine_primer_parts = []
+    if doc_id_spoken:
+        doctrine_primer_parts.append(doc_id_spoken)
+    elif first_quote_spoken:
+        doctrine_primer_parts.append(f"The controlling jurisprudential rule states: {first_quote_spoken}")
+    elif req_spoken:
+        doctrine_primer_parts.append(req_spoken)
+    if magic_spoken:
+        doctrine_primer_parts.append(f"Key terms of art and magic words to remember: {magic_spoken}.")
+    doctrine_primer_str = " ".join(doctrine_primer_parts) or clean_text_for_speech(fields.get("cold_call", ""))
+
+    doctrine_chapter_parts = []
+    if doc_id_spoken:
+        doctrine_chapter_parts.append(f"Final Caselaw Rule: {doc_id_spoken}")
+    if req_spoken:
+        doctrine_chapter_parts.append(f"Doctrinal Requisites and Elements Checklist: {req_spoken}")
+    if magic_spoken:
+        doctrine_chapter_parts.append(f"Subject-Specific Terms of Art and Magic Words: {magic_spoken}.")
+    if spotlight_extra:
+        doctrine_chapter_parts.append(" ".join(clean_text_for_speech(x) for x in spotlight_extra))
+    doctrine_chapter_str = " ".join(doctrine_chapter_parts) or doctrine_primer_str
+
+    # Step 9: Final Outcome of the case in plain language
     outcome_spoken = clean_text_for_speech(
-        fields.get("outcome") or fields.get("fallo", "")
+        fields.get("outcome") or fields.get("fallo") or "See the dispositive portion of the decision."
     )
+
+    # =========================================================================
+    # ASSEMBLE VERSION 1: COLD-CALL PRIMER (9-STEP STRUCTURE)
+    # =========================================================================
+    primer_step4 = prim_issue_question_str
+    if prim_issue_expl_spoken and prim_issue_expl_spoken.lower() not in prim_issue_question_str.lower():
+        primer_step4 = f"{prim_issue_question_str} {prim_issue_expl_spoken}"
 
     primer_parts = [
-        f"Cold-Call Audio Primer: {title_spoken}.",
-        f"Subject: {subj_spoken}. Syllabus Topic: {top_spoken}.",
-        f"Here is the Factual Trigger that sparked the case: {trigger_spoken}",
-        f"Primary Issue: {primary_issue_spoken}",
+        f"Cold-Call Audio Primer: {title_spoken}. "
+        f"First-Tier Subject: {subj_spoken}. Second-Tier Syllabus Topic: {top_spoken}. "
+        f"Relevant Governing Law: {spoken_law_summary}",
+        f"Factual Trigger: {trigger_spoken}",
+        f"Connection to the Primary Issue: {trigger_bridge_spoken}",
+        f"Primary Syllabus Issue Explained: {primer_step4}",
+        f"Competing Arguments on the Primary Issue: {args_primer_spoken}",
+        f"Supreme Court Ruling on the Primary Issue: {ruling_primer_str}",
+        f"Step-by-Step Ratio Decidendi Synthesis: {ratio_primer_str}",
+        f"Doctrine Identifier and Controlling Caselaw Rule: {doctrine_primer_str}",
+        f"Final Outcome in Plain Language: {outcome_spoken}",
     ]
-    if verdict_spoken:
-        primer_parts.append(f"Supreme Court Ruling: {verdict_spoken}")
-    if plain_exp_spoken:
-        primer_parts.append(f"In plain, everyday language: {plain_exp_spoken}")
-    if cold_call_spoken:
-        primer_parts.append(f"Thirty-Second Cold-Call Synthesis: {cold_call_spoken}")
-    if magic_spoken:
-        primer_parts.append(f"Key Terms of Art and Magic Words for recitation: {magic_spoken}.")
-    if outcome_spoken:
-        primer_parts.append(f"Final Outcome: {outcome_spoken}")
-
     primer_script = "\n\n".join(p for p in primer_parts if p.strip())
 
+    # =========================================================================
+    # ASSEMBLE VERSION 2: COMPLETE AUDIO CHAPTER (13-STEP STRUCTURE)
+    # =========================================================================
+    chap_step1_law = spoken_law_summary
+    if gov_law_full and gov_law_full.lower() not in spoken_law_summary.lower():
+        chap_step1_law = f"{spoken_law_summary} Specifically, the governing provision reads: {gov_law_full}"
+    if fields.get("historical_rule"):
+        chap_step1_law += f" Historical Landmark Note: {clean_text_for_speech(fields['historical_rule'])}"
+
+    chap_step2_trigger = trigger_spoken
+    cast_posture = []
+    if fields.get("key_parties"):
+        cast_posture.append(f"The Key Parties: {clean_text_for_speech(fields['key_parties'])}")
+    if fields.get("posture"):
+        cast_posture.append(f"Procedural Posture: {clean_text_for_speech(fields['posture'])}")
+    if cast_posture:
+        chap_step2_trigger = " ".join(cast_posture) + f" Here is the Factual Trigger that sparked the dispute: {trigger_spoken}"
+
+    chap_step4_issue = prim_issue_question_str
+    if prim_issue_expl_spoken:
+        chap_step4_issue = f"{prim_issue_question_str} In plain terms: {prim_issue_expl_spoken}"
+
+    chap_step5_args = args_primer_spoken
+    if pet_full_spoken or resp_full_spoken:
+        detailed_args = []
+        if pet_full_spoken:
+            detailed_args.append(f"In detail, the Petitioner contended: {pet_full_spoken}")
+        if resp_full_spoken:
+            detailed_args.append(f"In response, the Respondent argued: {resp_full_spoken}")
+        chap_step5_args = f"{args_primer_spoken} " + " ".join(detailed_args)
+
     chapter_parts = [
-        f"Complete Audio Case Chapter, Plain-Language Edition. {clean_text_for_speech(citation)}.",
-        f"Filed under {subj_spoken}, syllabus topic: {top_spoken}.",
+        f"Complete Audio Case Chapter: {clean_text_for_speech(citation)}. "
+        f"Step 1. Subject, Syllabus Topic, and Governing Law. "
+        f"First-Tier Subject Category: {subj_spoken}. Second-Tier Syllabus Topic: {top_spoken}. "
+        f"Main Relevant Law governing the primary syllabus issue: {chap_step1_law}",
+        f"Step 2. Factual Trigger Related to the Primary Syllabus Issue. {chap_step2_trigger}",
+        f"Step 3. How the Factual Trigger Relates to the Primary Syllabus Issue. {trigger_bridge_spoken}",
+        f"Step 4. Explanation of the Primary Syllabus Issue. {chap_step4_issue}",
+        f"Step 5. Arguments of the Petitioner and Respondent on the Primary Issue. {chap_step5_args}",
+        f"Step 6. Ruling of the Supreme Court on the Primary Syllabus Issue. {ruling_chapter_str}",
+        f"Step 7. Synthesis of Resolving the Primary Syllabus Issue via the Step-by-Step Ratio Decidendi. {ratio_chapter_str}",
+        f"Step 8. Doctrine Identifier and Final Caselaw Rule. {doctrine_chapter_str}",
+        f"Step 9. Final Outcome of the Case in Plain Language. {outcome_spoken}",
     ]
 
-    sec1_intro = []
-    if fields.get("key_parties"):
-        sec1_intro.append(f"The Cast of Characters: {clean_text_for_speech(fields['key_parties'])}")
-    if fields.get("posture"):
-        sec1_intro.append(f"How the case reached the Supreme Court: {clean_text_for_speech(fields['posture'])}")
-    if trigger_spoken:
-        sec1_intro.append(f"Plain-Language Story Hook and Factual Trigger: {trigger_spoken}")
-    if outcome_spoken:
-        sec1_intro.append(f"Bottom-Line Outcome up front: {outcome_spoken}")
-    if sec1_intro:
-        chapter_parts.append("Part 1. Case Overview, Parties, and Story Hook. " + " ".join(sec1_intro))
+    # Explicit Audio Transition between Step 9 and Step 10
+    custom_trans = clean_text_for_speech(fields.get("chapter_transition", ""))
+    transition_statement = (
+        "The main topic of contention is now resolved. "
+        "The next set of audio overviews covers the other details, chronological context, and remaining issues in the case."
+    )
+    if custom_trans and "main topic of contention" not in custom_trans.lower():
+        transition_statement = f"{transition_statement} {custom_trans}"
+    elif custom_trans:
+        transition_statement = custom_trans
+    chapter_parts.append(transition_statement)
 
-    if fields.get("primary_hierarchy") or fields.get("governing_law"):
-        gov_lines = []
-        if fields.get("primary_hierarchy"):
-            gov_lines.append(f"Doctrinal Classification: {clean_text_for_speech(fields['primary_hierarchy'])}.")
-        if fields.get("governing_law"):
-            gov_lines.append(f"Governing Constitutional or Statutory Provision: {clean_text_for_speech(fields['governing_law'])}")
-        chapter_parts.append("Part 2. Governing Law and Syllabus Framework. " + " ".join(gov_lines))
-
+    # Step 10: All other related issues in the case not yet discussed (plus chronological facts storyboard)
+    step10_segments = ["Step 10. All Other Related Issues and Additional Case Details Not Yet Discussed."]
     if timeline_events:
         timeline_spoken = " ".join(clean_text_for_speech(ev) for ev in timeline_events)
-        chapter_parts.append(f"Part 3. Chronological Facts Storyboard. Here is how the events unfolded step by step: {timeline_spoken}")
+        step10_segments.append(f"First, here is the complete Chronological Facts Storyboard for full procedural context: {timeline_spoken}")
 
-    if pet_args or resp_args:
-        arg_lines = ["Part 4. Competing Arguments of the Parties."]
-        if pet_args:
-            arg_lines.append("For the Petitioner: " + " ".join(clean_text_for_speech(a) for a in pet_args))
-        if resp_args:
-            arg_lines.append("For the Respondent: " + " ".join(clean_text_for_speech(a) for a in resp_args))
-        chapter_parts.append(" ".join(arg_lines))
+    if secondary_list:
+        step10_segments.append(f"Next, the Supreme Court resolved {len(secondary_list)} additional procedural or secondary issue(s):")
+        for s_idx, sec_iss in enumerate(secondary_list, start=1):
+            q_sec = clean_text_for_speech(sec_iss["recit_q"] or sec_iss["question"] or sec_iss["a"])
+            a_sec = clean_text_for_speech(sec_iss["a"])
+            d_sec = clean_text_for_speech(sec_iss["d"])
+            b_sec = clean_text_for_speech(sec_iss["b"])
+            c_sec = clean_text_for_speech(sec_iss["c"])
+            sec_narration = [f"Additional Issue {s_idx}: {q_sec}"]
+            if a_sec and a_sec != q_sec:
+                sec_narration.append(f"Ruling: {a_sec}")
+            if d_sec:
+                sec_narration.append(f"Plain-language explanation: {d_sec}")
+            if b_sec:
+                sec_narration.append(f"Ratio Decidendi: {b_sec}")
+            if c_sec:
+                sec_narration.append(f"Verbatim holding: {c_sec}")
+            step10_segments.append(" ".join(sec_narration))
+    else:
+        step10_segments.append("No separate secondary or collateral issues were left unresolved beyond the primary syllabus issue.")
 
-    if issue_blocks:
-        ruling_narration = [
-            "Part 5. Issues, Plain-Language Explanations, and Supreme Court Ratio Decidendi. "
-            "For each issue, we will first hear the direct answer and plain-English explanation, followed by the Court's detailed legal reasoning."
-        ]
-        for idx_b, blk in enumerate(issue_blocks, start=1):
-            a_txt = clean_text_for_speech(blk.get("a", ""))
-            d_txt = clean_text_for_speech(blk.get("d", ""))
-            b_txt = clean_text_for_speech(blk.get("b", ""))
-            c_txt = clean_text_for_speech(blk.get("c", ""))
+    chapter_parts.append(" ".join(step10_segments))
 
-            item_speech = [f"Issue {idx_b}: {a_txt}"]
-            if d_txt:
-                item_speech.append(f"In plain, everyday language: {d_txt}")
-            if b_txt:
-                item_speech.append(f"Step-by-Step Legal Reasoning: {b_txt}")
-            if c_txt:
-                item_speech.append(f"In the exact words of the Supreme Court: {c_txt}")
-            ruling_narration.append(" ".join(item_speech))
-        chapter_parts.append("\n\n".join(ruling_narration))
-    elif ratios or issues_list:
-        fallback_ruling = ["Part 5. Issues and Supreme Court Ruling."]
-        if issues_list:
-            fallback_ruling.append("Issues: " + " ".join(clean_text_for_speech(i) for i in issues_list))
-        if ratios:
-            fallback_ruling.append("Ruling and Ratio: " + " ".join(clean_text_for_speech(r) for r in ratios))
-        chapter_parts.append(" ".join(fallback_ruling))
+    # Step 11: Final Disposition (Fallo)
+    fallo_spoken = clean_text_for_speech(fields.get("fallo") or fields.get("outcome") or "Wherefore, the petition is resolved accordingly.")
+    chapter_parts.append(f"Step 11. Final Disposition and Official Fallo. {fallo_spoken}")
 
-    spot_lines = []
-    if fields.get("requisites"):
-        spot_lines.append(f"Doctrinal Requisites and Elements Checklist: {clean_text_for_speech(fields['requisites'])}")
-    if magic_spoken:
-        spot_lines.append(f"Subject-Specific Terms of Art and Magic Words: {magic_spoken}.")
-    if cold_call_spoken:
-        spot_lines.append(f"Cold-Call Recitation Synthesis: {cold_call_spoken}")
-    if spotlight_extra:
-        spot_lines.append(" ".join(clean_text_for_speech(x) for x in spotlight_extra))
-    if spot_lines:
-        chapter_parts.append("Part 6. Subject-Specific Doctrinal and Recitation Spotlight. " + " ".join(spot_lines))
+    # Step 12: Separate Opinions (if any)
+    sep_raw = fields.get("separate_opinions", "").strip()
+    if sep_raw and "no separate opinions" not in sep_raw.lower():
+        sep_spoken = clean_text_for_speech(sep_raw)
+    else:
+        sep_spoken = "No separate concurring or dissenting opinions were filed in this decision."
+    chapter_parts.append(f"Step 12. Separate Opinions. {sep_spoken}")
 
-    sec7_lines = []
-    if outcome_spoken:
-        sec7_lines.append(f"Plain-Language Outcome: {outcome_spoken}")
-    if fields.get("fallo"):
-        sec7_lines.append(f"Official Dispositive Portion, or Fallo: {clean_text_for_speech(fields['fallo'])}")
-    if fields.get("separate_opinions") and "no separate opinions" not in fields["separate_opinions"].lower():
-        sec7_lines.append(f"Separate Opinions: {clean_text_for_speech(fields['separate_opinions'])}")
-    if sec7_lines:
-        chapter_parts.append("Part 7. Final Disposition and Outcome. " + " ".join(sec7_lines))
+    # Step 13: Final Review of the Main Reckoning Point of the Case
+    reckoning_parts = []
+    if fields.get("final_reckoning"):
+        reckoning_parts.append(clean_text_for_speech(fields["final_reckoning"]))
+    if fields.get("cold_call") and fields.get("cold_call") != fields.get("final_reckoning"):
+        reckoning_parts.append(f"Thirty-Second Cold-Call Synthesis: {clean_text_for_speech(fields['cold_call'])}")
+    if not reckoning_parts:
+        reckoning_parts.append(f"In summary, on the issue of {prim_issue_question_str}, {ruling_primer_str} {outcome_spoken}")
+    chapter_parts.append("Step 13. Final Review of the Main Reckoning Point of the Case. " + " ".join(reckoning_parts))
 
     chapter_script = "\n\n".join(p for p in chapter_parts if p.strip())
+
+    # Apply Phonetic Pronunciation Guide from Section 8 if available
+    phonetic_guide = fields.get("phonetic_guide", "")
+    if phonetic_guide:
+        primer_script = apply_phonetic_pronunciations(primer_script, phonetic_guide)
+        chapter_script = apply_phonetic_pronunciations(chapter_script, phonetic_guide)
+
     return primer_script, chapter_script
 
 
@@ -1675,7 +1934,9 @@ if query_str and bm25 and cases:
 
             btn_c1, btn_c2, _ = st.columns([1.4, 2.0, 4.6])
             with btn_c1:
-                if st.button("📖 Open Case Digest", key=f"open_search_{idx}", use_container_width=True):
+                if st.button("📖 Open Case Digest", key=f"open_search_{match_case['_uid']}", use_container_width=True):
+                    st.session_state.selected_subject = match_case.get("subject", "-- All Subjects --")
+                    st.session_state.selected_topic = match_case.get("topic", "-- All Topics --")
                     st.session_state.selected_lookup_key = match_case["_uid"]
                     st.session_state.active_search_query = ""
                     st.rerun()
@@ -1784,7 +2045,7 @@ with reader_container:
 
         with aud_col1:
             st.markdown("**⚡ 1. 60–90s Cold-Call Primer**")
-            st.caption("High-yield trigger, primary issue, ruling & magic words.")
+            st.caption("9-Step Primary Syllabus Issue flow: Law → Trigger → Bridge → Issue → Arguments → Ruling → Ratio → Doctrine → Outcome.")
             if primer_mp3_path.exists():
                 st.audio(str(primer_mp3_path), format="audio/mp3")
                 if st.button("🔄 Regenerate Primer MP3", key=f"regen_primer_{active_case['_uid']}", use_container_width=True):
@@ -1805,7 +2066,7 @@ with reader_container:
 
         with aud_col2:
             st.markdown("**📖 2. Complete Audio Chapter (Plain-Language Emphasis)**")
-            st.caption("Full-text substitute walkthrough prioritizing plain explanations.")
+            st.caption("13-Step Full Walkthrough: Resolves Primary Issue (Steps 1–9) + Transition + Secondary Issues, Fallo, Separate Opinions & Reckoning Point (Steps 10–13).")
             if chapter_mp3_path.exists():
                 st.audio(str(chapter_mp3_path), format="audio/mp3")
                 if st.button("🔄 Regenerate Chapter MP3", key=f"regen_chap_{active_case['_uid']}", use_container_width=True):
