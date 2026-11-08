@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import streamlit as st
 from rank_bm25 import BM25Okapi
 
@@ -1323,10 +1323,10 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
     div[data-testid="stVerticalBlock"] { gap: .72rem; }
     p, li, label, span, div { font-family: var(--font-ui); }
 
-    /* Remove Streamlit's native sidebar collapse button */
-[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
-}
+    /* Hide Streamlit's native double-chevron; retain the app-owned drawer toggle. */
+    [data-testid="stSidebarCollapseButton"] {
+      display: none !important;
+    }
 
     /* App-controlled drawer: the top-left menu button remains in the main page. */
     section[data-testid="stSidebar"] {
@@ -1488,6 +1488,23 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       background:var(--bg-surface); border:1px solid var(--border);
       border-radius:8px; padding:1.1rem 1.25rem; margin:.65rem 0;
       box-shadow:var(--shadow); border-left:3px solid var(--accent);
+    }
+    .search-card-link {
+      display:block; color:inherit !important; text-decoration:none !important;
+      border-radius:8px; outline:none; cursor:pointer;
+    }
+    .search-card-link:focus-visible {
+      outline:3px solid var(--accent) !important; outline-offset:3px !important;
+    }
+    .search-card-link:hover .search-card {
+      border-color:var(--accent) !important;
+      transform:translateY(-1px);
+      box-shadow:var(--shadow-hover, var(--shadow));
+    }
+    .search-card-link .search-card { cursor:pointer; transition:transform .14s ease, border-color .14s ease, box-shadow .14s ease; }
+    .search-card-open-hint {
+      margin-top:.55rem; color:var(--text-muted); font:600 .72rem var(--font-ui);
+      letter-spacing:.02em;
     }
     .search-card-title {
       font-family:var(--font-display) !important; font-size:1.42rem;
@@ -1677,6 +1694,43 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
 
 # --- 6. LOAD LIBRARY DATA ---
 cases, bm25, tokenized_corpus = load_library()
+
+# Search result cards are full-card links. They pass a one-time case UID through
+# the URL so the selection is applied before sidebar widgets are instantiated.
+# This avoids inert HTML cards and keeps the existing Streamlit reader workflow.
+def _consume_open_case_query(library_cases: List[Dict[str, Any]]) -> None:
+    try:
+        requested_uid = st.query_params.get("open_case", "")
+    except Exception:
+        requested_uid = ""
+
+    if not requested_uid:
+        return
+
+    target_case = next(
+        (case for case in library_cases if str(case.get("_uid", "")) == str(requested_uid)),
+        None,
+    )
+    if target_case:
+        st.session_state.selected_lookup_key = target_case["_uid"]
+        st.session_state.selected_subject = target_case.get("subject") or "-- All Subjects --"
+        st.session_state.selected_topic = target_case.get("topic") or "-- All Topics --"
+        st.session_state.active_search_query = ""
+        st.session_state.scroll_to_anchor = "reader-top-anchor"
+        # Keep widget state aligned before the sidebar selectboxes/radio are built.
+        st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
+        st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
+        st.session_state["_sidebar_case_radio"] = target_case["_uid"]
+
+    # Remove the navigation token so it cannot re-select the same case on later
+    # interactions (for example, when changing the reading mode or font size).
+    try:
+        st.query_params.pop("open_case", None)
+    except Exception:
+        pass
+
+
+_consume_open_case_query(cases)
 
 if cases and not st.session_state.selected_lookup_key:
     st.session_state.selected_lookup_key = cases[0]["_uid"]
@@ -1898,7 +1952,7 @@ if query_str and cases:
         f"<div class='search-heading'>Search results</div><div class='search-snippet'>“{html.escape(query_str)}” · {len(ranked_pairs):,} matching cases</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Select any result from the Filing Cabinet on the left to open its digest. The complete ranked list remains available there.")
+    st.caption("Select a case tile to open its full digest. Results are ranked by relevance; the Filing Cabinet on the left also mirrors the matching cases.")
 
     if not bm25:
         st.warning("The lexical search index is unavailable. Check that `rank-bm25` is installed and restart the app.")
@@ -1908,21 +1962,25 @@ if query_str and cases:
         for idx, score_val in ranked_pairs[:15]:
             match_case = cases[idx]
             snippet_html = get_search_snippet(match_case.get("digest", ""), query_tokens)
+            case_uid = str(match_case.get("_uid", ""))
+            case_href = "?open_case=" + quote(case_uid, safe="")
+            case_title = html.escape(str(match_case.get("citation", "Untitled Case")))
 
             card_html = (
+                f"<a class='search-card-link' href='{html.escape(case_href, quote=True)}' "
+                f"aria-label='Open case digest: {case_title}' target='_self'>"
                 "<div class='search-card'>"
                 "<div class='search-meta-row'>"
-                f"<span class='search-meta-chip'>{html.escape(match_case.get('subject', 'General'))}</span>"
-                f"<span class='search-meta-chip'>{html.escape(match_case.get('topic', 'General'))}</span>"
-                f"<span class='search-meta-chip'>{html.escape(match_case.get('lookup_key', ''))}</span>"
+                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('subject', 'General')))}</span>"
+                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('topic', 'General')))}</span>"
+                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('lookup_key', '')))}</span>"
                 "</div>"
-                f"<div class='search-card-title'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
+                f"<div class='search-card-title'>{format_inline_markdown(str(match_case.get('citation', 'Untitled Case')), query_tokens)}</div>"
                 f"<div class='search-snippet'>{snippet_html}</div>"
-                "</div>"
+                "<div class='search-card-open-hint'>Open case digest ↗</div>"
+                "</div></a>"
             )
             st.markdown(card_html, unsafe_allow_html=True)
-
-            st.markdown("<div style='margin-bottom: 0.55rem;'></div>", unsafe_allow_html=True)
 
     st.stop()
 
