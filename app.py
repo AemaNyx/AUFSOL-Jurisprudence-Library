@@ -1500,44 +1500,86 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
     }
     .workspace-rule { border-bottom:1px solid var(--border); margin:.15rem 0 1rem; }
 
-    /* Search result cards. */
+    /* Search results: compact action rail, vertically balanced with each result card. */
     .search-heading {
-      font-family:var(--font-display) !important; font-size:2rem;
+      font-family:var(--font-display) !important; font-size:2.05rem;
       font-weight:600; line-height:1.05; color:var(--text-primary) !important;
-      margin:.35rem 0 .15rem;
+      margin:.4rem 0 .18rem;
+    }
+    .search-summary {
+      color:var(--text-muted) !important; font:500 .82rem var(--font-ui);
+      margin:.15rem 0 .85rem; letter-spacing:.01em;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) {
+      align-items:center !important;
+      gap:.72rem !important;
+      margin:.48rem 0 .62rem !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child {
+      display:flex !important;
+      align-items:center !important;
+      justify-content:center !important;
+      align-self:stretch !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child > div,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child > div {
+      width:100% !important;
+      display:flex !important;
+      align-items:center !important;
+      justify-content:center !important;
     }
     .search-card {
       background:var(--bg-surface); border:1px solid var(--border);
-      border-radius:8px; padding:1.1rem 1.25rem; margin:.65rem 0;
-      box-shadow:var(--shadow); border-left:3px solid var(--accent);
+      border-left:2px solid var(--accent); border-radius:9px;
+      padding:.95rem 1.2rem 1rem; margin:0 !important;
+      min-height:108px; display:flex; flex-direction:column; justify-content:center;
+      box-shadow:var(--shadow);
+      transition:border-color .14s ease, box-shadow .14s ease, transform .14s ease;
     }
-    .search-card { transition:border-color .14s ease, box-shadow .14s ease; }
     .search-card:hover {
-      border-color:var(--accent) !important;
+      border-color:color-mix(in srgb, var(--accent) 55%, var(--border)) !important;
       box-shadow:var(--shadow-hover, var(--shadow));
+      transform:translateY(-1px);
     }
-    /* The explicit Open case action sits to the left of each search result. */
-    div[data-testid="stHorizontalBlock"]:has(.search-card) div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
-    div[data-testid="stHorizontalBlock"]:has(.search-card) div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
-      width:100% !important; min-height:2.55rem !important;
-      padding:.35rem .45rem !important; white-space:normal !important;
-      font-size:.76rem !important; line-height:1.2 !important;
-      border-color:var(--accent) !important;
+    /* Small, consistent Open case control; it is intentionally not stretched to card width. */
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
+      width:100% !important; min-width:0 !important; min-height:2.55rem !important;
+      padding:.35rem .35rem !important; white-space:nowrap !important;
+      font-size:.76rem !important; line-height:1.15 !important;
+      background:var(--accent-soft) !important;
+      border:1px solid color-mix(in srgb, var(--accent) 48%, var(--border)) !important;
+      color:var(--text-primary) !important;
+      border-radius:7px !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button:hover,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) > div[data-testid="column"]:first-child div[data-testid="stButton"] > button:hover {
+      background:var(--accent) !important; border-color:var(--accent) !important;
+      color:#131313 !important;
+    }
+    .search-card-topline { display:flex; align-items:center; gap:.55rem; margin-bottom:.34rem; }
+    .search-result-index {
+      display:inline-flex; align-items:center; justify-content:center; flex:none;
+      min-width:1.55rem; height:1.35rem; padding:0 .28rem;
+      border-radius:4px; background:var(--bg-elevated); border:1px solid var(--border);
+      color:var(--text-muted) !important; font:600 .62rem var(--font-ui);
+      font-variant-numeric:tabular-nums;
     }
     .search-card-title {
-      font-family:var(--font-display) !important; font-size:1.42rem;
+      font-family:var(--font-display) !important; font-size:1.38rem;
       font-weight:600; line-height:1.12; color:var(--text-primary) !important;
-      margin:.2rem 0 .5rem;
+      margin:.12rem 0 .35rem;
     }
     .search-snippet {
-      font-family:var(--font-ui) !important; font-size:.92rem;
-      line-height:1.6; color:var(--text-secondary) !important;
+      font-family:var(--font-ui) !important; font-size:.88rem;
+      line-height:1.52; color:var(--text-secondary) !important;
     }
-    .search-meta-row { display:flex; gap:.45rem; align-items:center; flex-wrap:wrap; margin-bottom:.25rem; }
+    .search-meta-row { display:flex; gap:.35rem; align-items:center; flex-wrap:wrap; margin:0; }
     .search-meta-chip {
       background:var(--bg-elevated); border:1px solid var(--border);
       color:var(--text-muted) !important; border-radius:4px;
-      padding:.16rem .45rem; font:500 .65rem var(--font-ui);
+      padding:.13rem .4rem; font:500 .62rem var(--font-ui);
     }
 
     /* Document surface and legal reading hierarchy. */
@@ -1693,7 +1735,10 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       .reader-sheet h1.case-main-title { font-size:2.25rem !important; }
       .reader-sheet h3.sec-heading-text { font-size:1.35rem !important; }
       .toc-nav-list { grid-template-columns:1fr 1fr; }
-      .search-card { padding:.9rem; }
+      .search-card { padding:.85rem .9rem; min-height:96px; }
+      .search-card-title { font-size:1.2rem; }
+      .search-snippet { font-size:.82rem; }
+      div[data-testid="stHorizontalBlock"]:has(.search-card) { gap:.45rem !important; }
     }
     """
 
@@ -1934,7 +1979,10 @@ if query_str and cases:
         f"<div class='search-heading'>Search results</div><div class='search-snippet'>“{html.escape(query_str)}” · {len(ranked_pairs):,} matching cases</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Use the Open case button beside any result to load its full digest. Results are ranked by relevance; the Filing Cabinet on the left also mirrors the matching cases.")
+    st.markdown(
+        f"<div class='search-summary'>Showing the most relevant matches · {min(len(ranked_pairs), 15)} displayed · Filing Cabinet synchronized</div>",
+        unsafe_allow_html=True,
+    )
 
     if not bm25:
         st.warning("The lexical search index is unavailable. Check that `rank-bm25` is installed and restart the app.")
@@ -1946,9 +1994,9 @@ if query_str and cases:
             snippet_html = get_search_snippet(match_case.get("digest", ""), query_tokens)
             case_uid = str(match_case.get("_uid", ""))
 
-            # Keep the explicit action on the left, with the complete case summary
-            # immediately beside it. The callback opens the normal reader natively.
-            action_col, card_col = st.columns([1.05, 6.0], gap="small")
+            # Keep the action on the left, but make it a compact control aligned
+            # to the vertical center of the case card. The full card remains readable.
+            action_col, card_col = st.columns([0.72, 7.0], gap="small")
             with action_col:
                 st.button(
                     "Open case",
@@ -1961,11 +2009,13 @@ if query_str and cases:
             with card_col:
                 card_html = (
                     "<div class='search-card'>"
+                    "<div class='search-card-topline'>"
+                    f"<span class='search-result-index'>{result_number:02d}</span>"
                     "<div class='search-meta-row'>"
                     f"<span class='search-meta-chip'>{html.escape(str(match_case.get('subject', 'General')))}</span>"
                     f"<span class='search-meta-chip'>{html.escape(str(match_case.get('topic', 'General')))}</span>"
                     f"<span class='search-meta-chip'>{html.escape(str(match_case.get('lookup_key', '')))}</span>"
-                    "</div>"
+                    "</div></div>"
                     f"<div class='search-card-title'>{format_inline_markdown(str(match_case.get('citation', 'Untitled Case')), query_tokens)}</div>"
                     f"<div class='search-snippet'>{snippet_html}</div>"
                     "</div>"
