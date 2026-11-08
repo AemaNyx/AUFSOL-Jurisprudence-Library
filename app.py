@@ -3,7 +3,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 import streamlit as st
 from rank_bm25 import BM25Okapi
 
@@ -62,6 +62,28 @@ def _cb_select_sidebar_case():
         st.session_state.selected_topic = chosen_case.get("topic") or "-- All Topics --"
         st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
         st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
+
+
+def _cb_open_search_case(case_uid: str):
+    """Open a search result natively, without URL navigation or a browser refresh."""
+    chosen_case = next(
+        (case for case in cases if str(case.get("_uid", "")) == str(case_uid)),
+        None,
+    )
+    if chosen_case is None:
+        return
+
+    st.session_state.selected_lookup_key = chosen_case["_uid"]
+    st.session_state.selected_subject = chosen_case.get("subject") or "-- All Subjects --"
+    st.session_state.selected_topic = chosen_case.get("topic") or "-- All Topics --"
+    st.session_state.active_search_query = ""
+    st.session_state.scroll_to_anchor = "reader-top-anchor"
+
+    # Synchronize all persistent filing-cabinet widgets before they are rendered
+    # on the callback-triggered rerun.
+    st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
+    st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
+    st.session_state["_sidebar_case_radio"] = chosen_case["_uid"]
 
 
 def _cb_on_subject_change():
@@ -1489,22 +1511,18 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       border-radius:8px; padding:1.1rem 1.25rem; margin:.65rem 0;
       box-shadow:var(--shadow); border-left:3px solid var(--accent);
     }
-    .search-card-link {
-      display:block; color:inherit !important; text-decoration:none !important;
-      border-radius:8px; outline:none; cursor:pointer;
-    }
-    .search-card-link:focus-visible {
-      outline:3px solid var(--accent) !important; outline-offset:3px !important;
-    }
-    .search-card-link:hover .search-card {
+    .search-card { transition:border-color .14s ease, box-shadow .14s ease; }
+    .search-card:hover {
       border-color:var(--accent) !important;
-      transform:translateY(-1px);
       box-shadow:var(--shadow-hover, var(--shadow));
     }
-    .search-card-link .search-card { cursor:pointer; transition:transform .14s ease, border-color .14s ease, box-shadow .14s ease; }
-    .search-card-open-hint {
-      margin-top:.55rem; color:var(--text-muted); font:600 .72rem var(--font-ui);
-      letter-spacing:.02em;
+    /* The explicit Open case action sits to the left of each search result. */
+    div[data-testid="stHorizontalBlock"]:has(.search-card) div[data-testid="stColumn"]:first-child div[data-testid="stButton"] > button,
+    div[data-testid="stHorizontalBlock"]:has(.search-card) div[data-testid="column"]:first-child div[data-testid="stButton"] > button {
+      width:100% !important; min-height:2.55rem !important;
+      padding:.35rem .45rem !important; white-space:normal !important;
+      font-size:.76rem !important; line-height:1.2 !important;
+      border-color:var(--accent) !important;
     }
     .search-card-title {
       font-family:var(--font-display) !important; font-size:1.42rem;
@@ -1695,43 +1713,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
 # --- 6. LOAD LIBRARY DATA ---
 cases, bm25, tokenized_corpus = load_library()
 
-# Search result cards are full-card links. They pass a one-time case UID through
-# the URL so the selection is applied before sidebar widgets are instantiated.
-# This avoids inert HTML cards and keeps the existing Streamlit reader workflow.
-def _consume_open_case_query(library_cases: List[Dict[str, Any]]) -> None:
-    try:
-        requested_uid = st.query_params.get("open_case", "")
-    except Exception:
-        requested_uid = ""
-
-    if not requested_uid:
-        return
-
-    target_case = next(
-        (case for case in library_cases if str(case.get("_uid", "")) == str(requested_uid)),
-        None,
-    )
-    if target_case:
-        st.session_state.selected_lookup_key = target_case["_uid"]
-        st.session_state.selected_subject = target_case.get("subject") or "-- All Subjects --"
-        st.session_state.selected_topic = target_case.get("topic") or "-- All Topics --"
-        st.session_state.active_search_query = ""
-        st.session_state.scroll_to_anchor = "reader-top-anchor"
-        # Keep widget state aligned before the sidebar selectboxes/radio are built.
-        st.session_state["_sidebar_subj_select"] = st.session_state.selected_subject
-        st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
-        st.session_state["_sidebar_case_radio"] = target_case["_uid"]
-
-    # Remove the navigation token so it cannot re-select the same case on later
-    # interactions (for example, when changing the reading mode or font size).
-    try:
-        st.query_params.pop("open_case", None)
-    except Exception:
-        pass
-
-
-_consume_open_case_query(cases)
-
+# Search results now use native Streamlit buttons and session-state callbacks.
 if cases and not st.session_state.selected_lookup_key:
     st.session_state.selected_lookup_key = cases[0]["_uid"]
 
@@ -1952,35 +1934,43 @@ if query_str and cases:
         f"<div class='search-heading'>Search results</div><div class='search-snippet'>“{html.escape(query_str)}” · {len(ranked_pairs):,} matching cases</div>",
         unsafe_allow_html=True,
     )
-    st.caption("Select a case tile to open its full digest. Results are ranked by relevance; the Filing Cabinet on the left also mirrors the matching cases.")
+    st.caption("Use the Open case button beside any result to load its full digest. Results are ranked by relevance; the Filing Cabinet on the left also mirrors the matching cases.")
 
     if not bm25:
         st.warning("The lexical search index is unavailable. Check that `rank-bm25` is installed and restart the app.")
     elif not ranked_pairs:
         st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
     else:
-        for idx, score_val in ranked_pairs[:15]:
-            match_case = cases[idx]
+        for result_number, (case_index, score_val) in enumerate(ranked_pairs[:15], start=1):
+            match_case = cases[case_index]
             snippet_html = get_search_snippet(match_case.get("digest", ""), query_tokens)
             case_uid = str(match_case.get("_uid", ""))
-            case_href = "?open_case=" + quote(case_uid, safe="")
-            case_title = html.escape(str(match_case.get("citation", "Untitled Case")))
 
-            card_html = (
-                f"<a class='search-card-link' href='{html.escape(case_href, quote=True)}' "
-                f"aria-label='Open case digest: {case_title}' target='_self'>"
-                "<div class='search-card'>"
-                "<div class='search-meta-row'>"
-                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('subject', 'General')))}</span>"
-                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('topic', 'General')))}</span>"
-                f"<span class='search-meta-chip'>{html.escape(str(match_case.get('lookup_key', '')))}</span>"
-                "</div>"
-                f"<div class='search-card-title'>{format_inline_markdown(str(match_case.get('citation', 'Untitled Case')), query_tokens)}</div>"
-                f"<div class='search-snippet'>{snippet_html}</div>"
-                "<div class='search-card-open-hint'>Open case digest ↗</div>"
-                "</div></a>"
-            )
-            st.markdown(card_html, unsafe_allow_html=True)
+            # Keep the explicit action on the left, with the complete case summary
+            # immediately beside it. The callback opens the normal reader natively.
+            action_col, card_col = st.columns([1.05, 6.0], gap="small")
+            with action_col:
+                st.button(
+                    "Open case",
+                    key=f"open_search_case_{result_number}_{case_index}",
+                    on_click=_cb_open_search_case,
+                    args=(case_uid,),
+                    use_container_width=True,
+                    help=f"Open {match_case.get('citation', 'this case')} in the case reader",
+                )
+            with card_col:
+                card_html = (
+                    "<div class='search-card'>"
+                    "<div class='search-meta-row'>"
+                    f"<span class='search-meta-chip'>{html.escape(str(match_case.get('subject', 'General')))}</span>"
+                    f"<span class='search-meta-chip'>{html.escape(str(match_case.get('topic', 'General')))}</span>"
+                    f"<span class='search-meta-chip'>{html.escape(str(match_case.get('lookup_key', '')))}</span>"
+                    "</div>"
+                    f"<div class='search-card-title'>{format_inline_markdown(str(match_case.get('citation', 'Untitled Case')), query_tokens)}</div>"
+                    f"<div class='search-snippet'>{snippet_html}</div>"
+                    "</div>"
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
 
     st.stop()
 
