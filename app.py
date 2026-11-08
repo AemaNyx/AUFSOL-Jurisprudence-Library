@@ -185,7 +185,7 @@ def clean_stray_asterisks(text: str) -> str:
 
 
 HIDDEN_AUDIO_SECTION_RE = re.compile(
-    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)(?:Hidden\s+Audio\s+Synthesis|Audio\s+Synthesis\s*&\s*Socratic\s+Bridge|Audio\s+Briefing\s+Metadata).*$",
+    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)?(?:Hidden\s+Audio|Audio\s+Synthesis|Audio\s+Briefing)|Spoken\s+Relevant\s+Law\s+Summary\s*:).*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -544,7 +544,7 @@ def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
 
 
 HIDDEN_AUDIO_SECTION_RE = re.compile(
-    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)(?:Hidden\s+Audio\s+Synthesis|Audio\s+Synthesis\s*&\s*Socratic\s+Bridge|Audio\s+Briefing\s+Metadata).*$",
+    r"^(?:#{1,4}\s*)?(?:\*\*)?(?:(?:8[.)]\s*|Section\s+8\s*[:.-]?\s*)?(?:Hidden\s+Audio|Audio\s+Synthesis|Audio\s+Briefing)|Spoken\s+Relevant\s+Law\s+Summary\s*:).*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -658,79 +658,77 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         s_unbold = _strip_md_and_bullets(s)
         low = s_unbold.lower()
 
-        # Standard Sections 1-7 & 6.5 fields
-        if low.startswith("concise recognizable title:"):
+        # Flexible Parsing for Standard Sections & Section 8
+        if re.match(r"^(?:concise\s+)?(?:recognizable\s+)?title\s*:", low):
             fields["concise_title"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("full official caption:"):
+        elif re.match(r"^(?:full\s+)?(?:official\s+)?caption\s*:", low):
             fields["official_caption"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("citation & metadata:"):
+        elif re.match(r"^citation(?:\s*&\s*metadata)?\s*:", low):
             fields["citation_metadata"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("key parties & roles"):
+        elif re.match(r"^key\s+parties(?:\s*&\s*roles)?", low):
             fields["key_parties"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("how the case reached the supreme court:"):
-            fields["posture"] = s_unbold.split(":", 1)[1].strip()
+        elif low.startswith("how the case reached"):
+            fields["posture"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("primary topic hierarchy:"):
+        elif re.match(r"^primary\s+topic(?:\s+hierarchy)?\s*:", low):
             fields["primary_hierarchy"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("secondary topic hierarchy"):
+        elif re.match(r"^secondary\s+topic(?:\s+hierarchy)?\s*:", low):
             fields["secondary_hierarchy"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
             continue
-        elif low.startswith("full text of governing"):
+        elif re.match(r"^full\s+text\s+of\s+governing", low):
             fields["governing_law"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
             continue
-        elif low.startswith("historical landmark rule:"):
+        elif re.match(r"^historical\s+landmark\s+rule\s*:", low):
             fields["historical_rule"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("factual trigger"):
+        elif re.match(r"^factual\s+trigger", low):
             fields["factual_trigger"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("doctrinal requisites"):
+        elif re.match(r"^doctrinal\s+requisites", low):
             fields["requisites"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("subject-specific terms of art"):
+        elif re.match(r"^subject-specific\s+terms", low):
             fields["magic_words"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("cold-call synthesis"):
+        elif re.match(r"^(?:thirty-second\s+)?cold-call\s+synthesis", low):
             fields["cold_call"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("separate opinions summary:"):
+        elif re.match(r"^separate\s+opinions(?:\s+summary)?\s*:", low):
             fields["separate_opinions"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("verbatim/near-verbatim fallo:"):
+        elif re.match(r"^(?:verbatim(?:/near-verbatim)?\s+)?fallo\s*:", low):
             fields["fallo"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("plain-language outcome:"):
+        elif re.match(r"^(?:plain-?language\s+)?outcome\s*:", low):
             fields["outcome"] = s_unbold.split(":", 1)[1].strip()
             continue
-
-        # Hidden Section 8 Audio Synthesis fields
-        elif low.startswith("spoken relevant law summary:"):
+        elif re.match(r"^spoken\s+relevant\s+law(?:\s+summary)?\s*:", low):
             fields["spoken_law_summary"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("trigger-to-issue bridge:"):
+        elif re.match(r"^trigger-to-issue\s+bridge\s*:", low):
             fields["trigger_bridge"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("primary issue spoken explanation:"):
+        elif re.match(r"^primary\s+issue\s+spoken\s+explanation\s*:", low):
             fields["primary_issue_explanation"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("primary issue arguments summary:"):
+        elif re.match(r"^primary\s+issue\s+arguments\s+summary\s*:", low):
             fields["primary_args_summary"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("doctrine identifier"):
+        elif re.match(r"^doctrine\s+identifier", low):
             fields["doctrine_identifier"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
             continue
-        elif low.startswith("chapter transition bridge:"):
+        elif re.match(r"^chapter\s+transition\s+bridge\s*:", low):
             fields["chapter_transition"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("final reckoning point:"):
+        elif re.match(r"^final\s+reckoning\s+point\s*:", low):
             fields["final_reckoning"] = s_unbold.split(":", 1)[1].strip()
             continue
-        elif low.startswith("phonetic pronunciation guide:"):
+        elif re.match(r"^phonetic\s+pronunciation\s+guide\s*:", low):
             fields["phonetic_guide"] = s_unbold.split(":", 1)[1].strip()
             continue
 
