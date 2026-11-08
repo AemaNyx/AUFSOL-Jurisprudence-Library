@@ -34,6 +34,7 @@ for _state_key, _default_value in _DEFAULT_STATE.items():
     if _state_key not in st.session_state:
         st.session_state[_state_key] = _default_value
 
+
 if st.session_state.theme_mode not in {"Light", "Dark"}:
     st.session_state.theme_mode = "Light"
 if st.session_state.font_scale not in {"Compact", "Standard", "Comfortable"}:
@@ -54,6 +55,7 @@ def _cb_select_sidebar_case():
     st.session_state.active_search_query = ""
     st.session_state.scroll_to_anchor = "reader-top-anchor"
 
+    # Search results are global, so selecting one also updates the folder filters.
     chosen_case = next((case for case in cases if case.get("_uid") == chosen), None)
     if chosen_case:
         st.session_state.selected_subject = chosen_case.get("subject") or "-- All Subjects --"
@@ -76,7 +78,7 @@ def _cb_on_topic_change():
 
 
 def _cb_cycle_view_mode():
-    """Cycle through Light -> Dark -> Focus Light -> Focus Dark -> Light."""
+    """Cycle through Light → Dark → Focus Light → Focus Dark → Light."""
     sequence = [
         ("Light", False),
         ("Dark", False),
@@ -104,7 +106,7 @@ def safe_external_url(value: Any) -> str:
 
 
 def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
-    """Resolves (Tier 1: Subject, Tier 2: Topic, Combined Category)."""
+    """Resolves (Tier 1: Subject, Tier 2: Topic, Combined Category) for both new 2-tier and legacy 1-tier records."""
     subj = (obj.get("subject") or obj.get("tier1_subject") or "").strip()
     top = (obj.get("topic") or obj.get("tier2_topic") or "").strip()
     raw_cat = (obj.get("category") or "").strip()
@@ -129,7 +131,7 @@ def resolve_two_tier_fields(obj: Dict[str, Any]) -> Tuple[str, str, str]:
 # --- 3. DATA LOADING & BM25 LEXICAL INDEXING ---
 @st.cache_data(show_spinner=False)
 def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List[str]]]:
-    """Loads records and builds BM25 index with 2-Tier metadata."""
+    """Loads all records from case_library/master_library.jsonl and builds BM25 index with 2-Tier metadata."""
     candidates = [
         APP_DIR / "case_library" / "master_library.jsonl",
         APP_DIR / "master_library.jsonl",
@@ -171,7 +173,7 @@ def load_library() -> Tuple[List[Dict[str, Any]], Optional[BM25Okapi], List[List
     return cases, bm25, tokenized_corpus
 
 
-# --- 4. MARKDOWN DIGEST PARSER & CLASSIFIER ---
+# --- 4. MARKDOWN DIGEST PARSER & UNIVERSAL SECTION CLASSIFIER (v1-v8 Compatible) ---
 CANONICAL_SEC_KEYWORDS = {
     "1": ("case header", "cast of characters", "procedural posture", "case title", "caption"),
     "2": ("syllabus topic", "codal provision", "factual trigger", "nature of the action", "nature of action"),
@@ -248,6 +250,7 @@ HIDDEN_AUDIO_SECTION_RE = re.compile(
 
 
 def strip_hidden_audio_section(digest_text: str) -> str:
+    """Removes Section 8 (Hidden Audio Synthesis Metadata) so it never appears in printed DOCX casebooks or visual reader panes."""
     if not digest_text:
         return ""
     m = HIDDEN_AUDIO_SECTION_RE.search(digest_text)
@@ -533,7 +536,9 @@ def get_search_snippet(text: str, query_tokens: List[str], window: int = 220) ->
     return format_inline_markdown(snippet, query_tokens)
 
 
+
 def rank_case_matches(query: str, library_cases: List[Dict[str, Any]], search_index: Optional[BM25Okapi]) -> List[Tuple[int, float]]:
+    """Return all matching case indexes in the same BM25 order used by the results page."""
     query = (query or "").strip()
     if not query or not search_index or not library_cases:
         return []
@@ -559,12 +564,14 @@ def rank_case_matches(query: str, library_cases: List[Dict[str, Any]], search_in
     return ranked
 
 
-# --- 4B. TTS BRIEFING ENGINE ---
+
+# --- 4B. AUTOMATED AUDIO CASE BRIEFING ENGINE (Edge Neural TTS: en-US-AndrewMultilingualNeural) ---
 DEFAULT_AUDIO_VOICE = "en-US-AndrewMultilingualNeural"
 AUDIO_DIR = APP_DIR / "case_library" / "audio_briefs"
 
 
 def clean_text_for_speech(text: str) -> str:
+    """Cleans Markdown formatting and expands Philippine legal abbreviations for natural spoken delivery."""
     if not text:
         return ""
     s = text.strip()
@@ -578,6 +585,7 @@ def clean_text_for_speech(text: str) -> str:
     s = s.replace("**", "").replace("*", "").replace("`", "")
     s = re.sub(r"^>\s*", "", s, flags=re.MULTILINE)
     s = re.sub(r"→|->|⟶", ", leading to ", s)
+
     s = re.sub(r"\bv\.?\s+", " versus ", s)
     s = re.sub(r"\bvs\.?\s+", " versus ", s, flags=re.IGNORECASE)
     s = re.sub(r"\bG\.?\s*R\.?\s*Nos?\.?\s*", "G.R. Number ", s, flags=re.IGNORECASE)
@@ -607,6 +615,7 @@ def _strip_md_and_bullets(line: str) -> str:
 
 
 def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
+    """Returns deterministic (primer_mp3_path, chapter_mp3_path) inside case_library/audio_briefs/."""
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     raw_key = case_entry.get("lookup_key") or "case"
     key = re.sub(r"[^A-Za-z0-9_-]", "", str(raw_key))[:28] or "case"
@@ -631,6 +640,7 @@ def get_audio_file_paths(case_entry: Dict[str, Any]) -> Tuple[Path, Path]:
 
 
 def apply_phonetic_pronunciations(text: str, phonetic_guide: str) -> str:
+    """Applies semicolon-separated 'Term = Phonetic' replacements from Section 8 before TTS synthesis."""
     if not text or not phonetic_guide or phonetic_guide.strip().lower() in ("none", "n/a", "not expressly stated in the decision."):
         return text
     out = text
@@ -645,6 +655,26 @@ def apply_phonetic_pronunciations(text: str, phonetic_guide: str) -> str:
 
 
 def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Builds two spoken scripts for Microsoft Edge Neural TTS (en-US-AndrewMultilingualNeural)
+    following the 9-Step (Cold-Call Primer) and 13-Step (Complete Audio Chapter) architecture:
+      Steps 1-9 (Shared by Primer & Chapter):
+        1. Introduction of Subject (Tier 1), Topic (Tier 2), and Relevant Law for Primary Syllabus Issue(s)
+        2. Factual Trigger related to Primary Syllabus Issue(s)
+        3. How the Factual Trigger is related to the Primary Syllabus Issue(s)
+        4. Explanation of the Primary Syllabus Issue(s)
+        5. Arguments of Petitioner and Respondent in the context of the Primary Syllabus Issue(s)
+        6. Ruling of the Court related to the Primary Syllabus Issue(s)
+        7. Synthesis of resolving the Primary Syllabus Issue(s) via Step-by-Step Ratio Decidendi
+        8. Doctrine Identifier relating to the final caselaw rule established/applied by the Court
+        9. Final Outcome of the case in plain language
+      Steps 10-13 (Chapter Only, after explicit spoken transition):
+        - Audio Transition: States that the main topic of contention is resolved and introduces remaining case details
+        10. All other related issues in the case not yet discussed (plus full chronological storyboard context)
+        11. Final Disposition (Fallo)
+        12. Separate Opinions (if any)
+        13. Final Review of the main reckoning point of the case
+    """
     citation = case_entry.get("citation", "Untitled Case")
     subject = case_entry.get("subject") or "General Jurisprudence"
     topic = case_entry.get("topic") or case_entry.get("category") or "General Topic"
@@ -708,54 +738,79 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         s_unbold = _strip_md_and_bullets(s)
         low = s_unbold.lower()
 
+        # Flexible Parsing for Standard Sections & Section 8
         if re.match(r"^(?:concise\s+)?(?:recognizable\s+)?title\s*:", low):
             fields["concise_title"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^(?:full\s+)?(?:official\s+)?caption\s*:", low):
             fields["official_caption"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^citation(?:\s*&\s*metadata)?\s*:", low):
             fields["citation_metadata"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^key\s+parties(?:\s*&\s*roles)?", low):
             fields["key_parties"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif low.startswith("how the case reached"):
             fields["posture"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^primary\s+topic(?:\s+hierarchy)?\s*:", low):
             fields["primary_hierarchy"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^secondary\s+topic(?:\s+hierarchy)?\s*:", low):
             fields["secondary_hierarchy"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
+            continue
         elif re.match(r"^full\s+text\s+of\s+governing", low):
             fields["governing_law"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else ""
+            continue
         elif re.match(r"^historical\s+landmark\s+rule\s*:", low):
             fields["historical_rule"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^factual\s+trigger", low):
             fields["factual_trigger"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^doctrinal\s+requisites", low):
             fields["requisites"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^subject-specific\s+terms", low):
             fields["magic_words"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^(?:thirty-second\s+)?cold-call\s+synthesis", low):
             fields["cold_call"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^separate\s+opinions(?:\s+summary)?\s*:", low):
             fields["separate_opinions"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^(?:verbatim(?:/near-verbatim)?\s+)?fallo\s*:", low):
             fields["fallo"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^(?:plain-?language\s+)?outcome\s*:", low):
             fields["outcome"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^spoken\s+relevant\s+law(?:\s+summary)?\s*:", low):
             fields["spoken_law_summary"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^trigger-to-issue\s+bridge\s*:", low):
             fields["trigger_bridge"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^primary\s+issue\s+spoken\s+explanation\s*:", low):
             fields["primary_issue_explanation"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^primary\s+issue\s+arguments\s+summary\s*:", low):
             fields["primary_args_summary"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^doctrine\s+identifier", low):
             fields["doctrine_identifier"] = s_unbold.split(":", 1)[1].strip() if ":" in s_unbold else s_unbold
+            continue
         elif re.match(r"^chapter\s+transition\s+bridge\s*:", low):
             fields["chapter_transition"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^final\s+reckoning\s+point\s*:", low):
             fields["final_reckoning"] = s_unbold.split(":", 1)[1].strip()
+            continue
         elif re.match(r"^phonetic\s+pronunciation\s+guide\s*:", low):
             fields["phonetic_guide"] = s_unbold.split(":", 1)[1].strip()
+            continue
 
         if current_sec == "2" and not fields.get("governing_law") and not low.startswith("assigned"):
             fields["governing_law"] = (fields.get("governing_law", "") + " " + s_unbold).strip()
@@ -816,6 +871,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     if current_issue_block:
         issue_blocks.append(current_issue_block)
 
+    # Pair issues from Section 5 with their verdict blocks from Section 6
     max_issues = max(len(issues_raw), len(issue_blocks))
     paired_issues: List[Dict[str, Any]] = []
     for idx in range(max_issues):
@@ -847,6 +903,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         paired_issues[0]["is_primary"] = True
     secondary_list = [p for p in paired_issues if not p["is_primary"]]
 
+    # --- BUILD SHARED CORE ELEMENTS (STEPS 1 TO 9) ---
     title_spoken = clean_text_for_speech(fields.get("concise_title") or citation)
     subj_spoken = clean_text_for_speech(subject)
     top_spoken = clean_text_for_speech(topic)
@@ -857,11 +914,13 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         or (gov_law_full[:380] if gov_law_full else hierarchy_spoken or f"Philippine jurisprudence under {subj_spoken}, {top_spoken}.")
     )
 
+    # Step 2: Factual Trigger
     trigger_spoken = clean_text_for_speech(
         fields.get("factual_trigger")
         or (" ".join(timeline_events[:2]) if timeline_events else "See the operative facts of the decision.")
     )
 
+    # Step 4: Primary Issue(s) & Explanation
     prim_questions_spoken = []
     for p in primary_list:
         q_base = clean_text_for_speech(p["recit_q"] or p["question"] or p["a"])
@@ -870,6 +929,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     prim_issue_question_str = " ".join(prim_questions_spoken) or "Whether the challenged act or ruling was valid under the governing law."
     prim_issue_expl_spoken = clean_text_for_speech(fields.get("primary_issue_explanation", ""))
 
+    # Step 3: How the Factual Trigger is related to the Primary Syllabus Issue(s)
     if fields.get("trigger_bridge"):
         trigger_bridge_spoken = clean_text_for_speech(fields["trigger_bridge"])
     else:
@@ -884,6 +944,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
                 f"Because of this factual trigger, the controversy squarely placed before the Supreme Court the primary syllabus issue of {prim_issue_question_str}"
             )
 
+    # Step 5: Arguments of Petitioner & Respondent in context of Primary Syllabus Issue(s)
     pet_full_spoken = " ".join(clean_text_for_speech(x) for x in pet_args if "not expressly stated" not in x.lower())
     resp_full_spoken = " ".join(clean_text_for_speech(x) for x in resp_args if "not expressly stated" not in x.lower())
     if fields.get("primary_args_summary"):
@@ -893,6 +954,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         r_short = clean_text_for_speech(resp_args[0]) if resp_args else "the challenged act or ruling was valid and lawful"
         args_primer_spoken = f"On this primary issue, the Petitioner argued that {p_short} Conversely, the Respondent countered that {r_short}"
 
+    # Step 6: Ruling of the Court related to Primary Syllabus Issue(s)
     prim_rulings_primer = []
     prim_rulings_chapter = []
     for p in primary_list:
@@ -910,6 +972,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     ruling_primer_str = " ".join(prim_rulings_primer) or clean_text_for_speech(fields.get("outcome", ""))
     ruling_chapter_str = " ".join(prim_rulings_chapter) or ruling_primer_str
 
+    # Step 7: Synthesis of resolving the Primary Syllabus Issue(s) using Step-by-Step Ratio Decidendi
     prim_ratios_primer = []
     prim_ratios_chapter = []
     for p in primary_list:
@@ -924,6 +987,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     ratio_primer_str = " ".join(prim_ratios_primer) or clean_text_for_speech(fields.get("cold_call", ""))
     ratio_chapter_str = " ".join(prim_ratios_chapter) or ratio_primer_str
 
+    # Step 8: Doctrine Identifier relating to the final caselaw rule
     doc_id_spoken = clean_text_for_speech(fields.get("doctrine_identifier", ""))
     req_spoken = clean_text_for_speech(fields.get("requisites", ""))
     magic_spoken = clean_text_for_speech(fields.get("magic_words", ""))
@@ -951,10 +1015,14 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         doctrine_chapter_parts.append(" ".join(clean_text_for_speech(x) for x in spotlight_extra))
     doctrine_chapter_str = " ".join(doctrine_chapter_parts) or doctrine_primer_str
 
+    # Step 9: Final Outcome of the case in plain language
     outcome_spoken = clean_text_for_speech(
         fields.get("outcome") or fields.get("fallo") or "See the dispositive portion of the decision."
     )
 
+    # =========================================================================
+    # ASSEMBLE VERSION 1: COLD-CALL PRIMER (9-STEP STRUCTURE)
+    # =========================================================================
     primer_step4 = prim_issue_question_str
     if prim_issue_expl_spoken and prim_issue_expl_spoken.lower() not in prim_issue_question_str.lower():
         primer_step4 = f"{prim_issue_question_str} {prim_issue_expl_spoken}"
@@ -974,6 +1042,9 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
     ]
     primer_script = "\n\n".join(p for p in primer_parts if p.strip())
 
+    # =========================================================================
+    # ASSEMBLE VERSION 2: COMPLETE AUDIO CHAPTER (13-STEP STRUCTURE)
+    # =========================================================================
     chap_step1_law = spoken_law_summary
     if gov_law_full and gov_law_full.lower() not in spoken_law_summary.lower():
         chap_step1_law = f"{spoken_law_summary} Specifically, the governing provision reads: {gov_law_full}"
@@ -1017,6 +1088,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         f"Step 9. Final Outcome of the Case in Plain Language. {outcome_spoken}",
     ]
 
+    # Explicit Audio Transition between Step 9 and Step 10
     custom_trans = clean_text_for_speech(fields.get("chapter_transition", ""))
     transition_statement = (
         "The main topic of contention is now resolved. "
@@ -1028,6 +1100,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         transition_statement = custom_trans
     chapter_parts.append(transition_statement)
 
+    # Step 10: All other related issues in the case not yet discussed (plus chronological facts storyboard)
     step10_segments = ["Step 10. All Other Related Issues and Additional Case Details Not Yet Discussed."]
     if timeline_events:
         timeline_spoken = " ".join(clean_text_for_speech(ev) for ev in timeline_events)
@@ -1056,9 +1129,11 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
 
     chapter_parts.append(" ".join(step10_segments))
 
+    # Step 11: Final Disposition (Fallo)
     fallo_spoken = clean_text_for_speech(fields.get("fallo") or fields.get("outcome") or "Wherefore, the petition is resolved accordingly.")
     chapter_parts.append(f"Step 11. Final Disposition and Official Fallo. {fallo_spoken}")
 
+    # Step 12: Separate Opinions (if any)
     sep_raw = fields.get("separate_opinions", "").strip()
     if sep_raw and "no separate opinions" not in sep_raw.lower():
         sep_spoken = clean_text_for_speech(sep_raw)
@@ -1066,6 +1141,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
         sep_spoken = "No separate concurring or dissenting opinions were filed in this decision."
     chapter_parts.append(f"Step 12. Separate Opinions. {sep_spoken}")
 
+    # Step 13: Final Review of the Main Reckoning Point of the Case
     reckoning_parts = []
     if fields.get("final_reckoning"):
         reckoning_parts.append(clean_text_for_speech(fields["final_reckoning"]))
@@ -1077,6 +1153,7 @@ def build_audio_scripts_for_case(case_entry: Dict[str, Any]) -> Tuple[str, str]:
 
     chapter_script = "\n\n".join(p for p in chapter_parts if p.strip())
 
+    # Apply Phonetic Pronunciation Guide from Section 8 if available
     phonetic_guide = fields.get("phonetic_guide", "")
     if phonetic_guide:
         primer_script = apply_phonetic_pronunciations(primer_script, phonetic_guide)
@@ -1091,6 +1168,7 @@ def synthesize_edge_tts_mp3(
     voice: str = DEFAULT_AUDIO_VOICE,
     rate: str = "+0%",
 ) -> Tuple[bool, str]:
+    """Synthesizes an MP3 file using edge-tts (en-US-AndrewMultilingualNeural)."""
     try:
         import asyncio
         import edge_tts
@@ -1108,7 +1186,7 @@ def synthesize_edge_tts_mp3(
             loop.close()
         return True, str(output_path)
     except ImportError as exc:
-        return False, f"Install edge-tts with: pip install edge-tts ({exc})"
+        return False, f"Audio generation requires the optional 'edge-tts' package. Install it with: pip install edge-tts ({exc})"
     except Exception as exc:
         return False, str(exc)
 
@@ -1121,7 +1199,8 @@ def render_audio_briefing(
     widget_key: str,
     spinner_text: str,
 ) -> None:
-    st.markdown(f"<div style='font-family: var(--font-ui); font-size: 0.92rem; font-weight: 700; color: var(--accent-primary); margin-bottom: 0.2rem;'>{title}</div>", unsafe_allow_html=True)
+    """Render one audio player and one generate/regenerate action."""
+    st.markdown(f"**{title}**")
     st.caption(description)
     already_exists = output_path.is_file()
     if already_exists:
@@ -1139,217 +1218,256 @@ def render_audio_briefing(
             st.error(f"Audio generation failed: {message}")
 
 
-# --- 5. THEME, STICKY NAVIGATOR & RESPONSIVE LUXURY CSS ---
+# --- 5. THEME, STICKY NAVIGATOR & RESPONSIVE CSS ---
 def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
     is_dark = theme == "Dark"
 
     scale_map = {
-        "Compact": ("16px", "27px", "19px"),
-        "Standard": ("18px", "32px", "21.5px"),
-        "Comfortable": ("20.5px", "36px", "24px"),
+        "Compact": ("15.5px", "26px", "18.5px"),
+        "Standard": ("17.5px", "31px", "20.5px"),
+        "Comfortable": ("20px", "35px", "23px"),
     }
-    body_px, title_px, h3_px = scale_map.get(font_scale, ("18px", "32px", "21.5px"))
+    body_px, title_px, h3_px = scale_map.get(font_scale, ("17.5px", "31px", "20.5px"))
 
     if is_dark:
         colors = {
-            "--bg-canvas": "#0B0F17",
-            "--bg-surface": "rgba(17, 24, 39, 0.78)",
-            "--bg-elevated": "#1A2234",
-            "--bg-sidebar": "#0E1524",
-            "--bg-header": "#111827",
-            "--bg-input": "rgba(22, 30, 46, 0.85)",
+            "--bg-app": "#0F172A",
+            "--bg-surface": "#1E293B",
+            "--bg-elevated": "#263349",
+            "--bg-sidebar": "#131C2E",
+            "--bg-header": "#0B1120",
+            "--bg-input": "#1E293B",
             "--text-primary": "#F1F5F9",
             "--text-secondary": "#CBD5E1",
             "--text-muted": "#94A3B8",
-            "--accent-primary": "#60A5FA",
             "--accent-navy": "#93C5FD",
-            "--accent-sage": "#2DD4BF",
-            "--accent-gold": "#F59E0B",
-            "--border-subtle": "rgba(51, 65, 85, 0.65)",
-            "--border-focus": "#60A5FA",
-            "--callout-blue-bg": "rgba(30, 58, 138, 0.22)",
-            "--callout-green-bg": "rgba(13, 148, 136, 0.18)",
-            "--callout-gold-bg": "rgba(180, 83, 9, 0.22)",
-            "--mark-bg": "rgba(245, 158, 11, 0.35)",
-            "--mark-text": "#FDE68A",
-            "--btn-bg": "#1A2234",
+            "--accent-primary": "#60A5FA",
+            "--accent-sage": "#5EEAD4",
+            "--accent-gold": "#EAB308",
+            "--border-subtle": "#334155",
+            "--callout-blue-bg": "rgba(59, 130, 246, 0.15)",
+            "--callout-green-bg": "rgba(20, 184, 166, 0.14)",
+            "--callout-gold-bg": "rgba(234, 179, 8, 0.15)",
+            "--mark-bg": "rgba(250, 204, 21, 0.35)",
+            "--mark-text": "#FEF08A",
+            "--btn-bg": "#1E293B",
             "--btn-text": "#F8FAFC",
-            "--btn-border": "rgba(71, 85, 105, 0.7)",
-            "--btn-hover-bg": "#243048",
-            "--shadow-sm": "0 2px 8px rgba(0, 0, 0, 0.25)",
-            "--shadow-card": "0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 4px 12px -2px rgba(0, 0, 0, 0.3)",
-            "--glass-bg": "rgba(15, 23, 42, 0.75)",
+            "--btn-border": "#475569",
+            "--btn-hover-bg": "#334155",
+            "--shadow-card": "0 8px 24px rgba(0, 0, 0, 0.38)",
         }
     else:
         colors = {
-            "--bg-canvas": "#FAF9F6",
-            "--bg-surface": "rgba(255, 255, 255, 0.88)",
-            "--bg-elevated": "#FFFFFF",
-            "--bg-sidebar": "#F3F4F6",
-            "--bg-header": "#172337",
+            "--bg-app": "#F6F5F1",
+            "--bg-surface": "#FFFFFF",
+            "--bg-elevated": "#F9F8F5",
+            "--bg-sidebar": "#F0F1EF",
+            "--bg-header": "#172C3F",
             "--bg-input": "#FFFFFF",
-            "--text-primary": "#1E293B",
-            "--text-secondary": "#475569",
+            "--text-primary": "#25313B",
+            "--text-secondary": "#334155",
             "--text-muted": "#64748B",
-            "--accent-primary": "#1D4ED8",
-            "--accent-navy": "#0F172A",
-            "--accent-sage": "#0D9488",
-            "--accent-gold": "#D97706",
-            "--border-subtle": "rgba(226, 232, 240, 0.85)",
-            "--border-focus": "#2563EB",
-            "--callout-blue-bg": "rgba(239, 246, 255, 0.85)",
-            "--callout-green-bg": "rgba(240, 253, 250, 0.85)",
-            "--callout-gold-bg": "rgba(254, 252, 232, 0.85)",
+            "--accent-navy": "#172C3F",
+            "--accent-primary": "#1E3A5F",
+            "--accent-sage": "#56716D",
+            "--accent-gold": "#C6A66A",
+            "--border-subtle": "#DCE0E5",
+            "--callout-blue-bg": "#EAF1F8",
+            "--callout-green-bg": "#EAF3EE",
+            "--callout-gold-bg": "#F7F0E5",
             "--mark-bg": "#FEF08A",
-            "--mark-text": "#1E293B",
+            "--mark-text": "#172C3F",
             "--btn-bg": "#FFFFFF",
-            "--btn-text": "#0F172A",
-            "--btn-border": "rgba(203, 213, 225, 0.9)",
-            "--btn-hover-bg": "#F8FAFC",
-            "--shadow-sm": "0 1px 3px rgba(15, 23, 42, 0.04), 0 1px 2px rgba(15, 23, 42, 0.02)",
-            "--shadow-card": "0 10px 25px -4px rgba(15, 23, 42, 0.06), 0 4px 10px -2px rgba(15, 23, 42, 0.03)",
-            "--glass-bg": "rgba(255, 255, 255, 0.82)",
+            "--btn-text": "#172C3F",
+            "--btn-border": "#CBD5E1",
+            "--btn-hover-bg": "#EAF1F8",
+            "--shadow-card": "0 2px 12px rgba(23, 44, 63, 0.06)",
         }
 
     css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
 
+    # Focus mode changes the reading canvas only. Sidebar visibility is managed
+    # by Streamlit's native sidebar state through the persistent floating toggle;
+    # do not use display:none on the sidebar because that breaks its native state.
     focus_reading_css = ""
     if focus_mode:
         focus_reading_css = """
-        .reader-sheet { max-width: 820px !important; margin: 0 auto !important; }
+        .reader-sheet { max-width: 840px !important; margin: 0 auto !important; }
         """
 
     st.markdown(
         f"""<style>
-        @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400;1,6..72,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
-        :root {{
-{css_vars}
-            --font-ui: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-            --font-serif: 'Newsreader', Georgia, Cambria, 'Times New Roman', serif;
-            --font-mono: 'JetBrains Mono', monospace;
-            --body-size: {body_px};
-            --title-size: {title_px};
-            --h3-size: {h3_px};
-            --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-        }}
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,400&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
         html {{ scroll-behavior: smooth; }}
 
-        /* --- 1. STRIP CHROME & STANDARDIZE STREAMLIT OVERLAYS --- */
-        #MainMenu, footer, .stDeployButton, div[data-testid="stDecoration"], div[data-testid="stStatusWidget"] {{
-            display: none !important;
-            visibility: hidden !important;
-        }}
-
+        /* Keep Streamlit's header alive: it contains the native sidebar controls. */
         header[data-testid="stHeader"] {{
             visibility: visible !important;
-            height: 2.85rem !important;
+            height: 2.875rem !important;
             background: transparent !important;
             border-bottom: 0 !important;
-            backdrop-filter: blur(12px) !important;
         }}
         div[data-testid="stToolbar"] {{
             visibility: visible !important;
             height: auto !important;
+            position: relative !important;
             background: transparent !important;
         }}
+        div[data-testid="stDecoration"] {{ display: none !important; }}
+        div[data-testid="stStatusWidget"] {{ display: none !important; }}
 
-        /* --- 2. LUXURY SCROLLBARS --- */
-        ::-webkit-scrollbar {{
-            width: 7px;
-            height: 7px;
-        }}
-        ::-webkit-scrollbar-track {{
-            background: transparent;
-        }}
-        ::-webkit-scrollbar-thumb {{
-            background: var(--border-subtle);
-            border-radius: 9999px;
-            border: 2px solid transparent;
-            background-clip: content-box;
-        }}
-        ::-webkit-scrollbar-thumb:hover {{
-            background: var(--text-muted);
-        }}
-
-        /* --- 3. GLOBAL APP CANVAS --- */
-        .stApp {{
-            background-color: var(--bg-canvas) !important;
-            color: var(--text-primary) !important;
-            font-family: var(--font-ui) !important;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-        }}
-
-        .block-container {{
-            padding-top: 1.1rem !important;
-            padding-bottom: 5rem !important;
-            max-width: 1420px !important;
-        }}
-
-        /* --- 4. FLOATING PERSISTENT TOGGLE BUTTON (DRAWER) --- */
+        /* Stable, ChatGPT-style floating drawer toggle (the only app iframe). */
         div[data-testid="stIFrame"],
         div[data-testid="stCustomComponentV1"] {{
             position: fixed !important;
-            top: 0.55rem !important;
-            left: 0.75rem !important;
-            width: 44px !important;
-            height: 44px !important;
-            min-width: 44px !important;
+            top: 0.45rem !important;
+            left: 0.55rem !important;
+            width: 46px !important;
+            height: 46px !important;
+            min-width: 46px !important;
             margin: 0 !important;
             padding: 0 !important;
-            z-index: 999999 !important;
+            z-index: 1000000 !important;
             pointer-events: auto !important;
         }}
         div[data-testid="stIFrame"] iframe,
         div[data-testid="stCustomComponentV1"] iframe {{
-            width: 44px !important;
-            height: 44px !important;
+            width: 46px !important;
+            height: 46px !important;
             border: 0 !important;
             overflow: hidden !important;
         }}
 
+        /* Make both native states remain available as a fallback. */
         [data-testid="stSidebarCollapseButton"],
         [data-testid="collapsedControl"],
         [data-testid="stExpandSidebarButton"] {{
             pointer-events: auto !important;
         }}
 
-        /* --- 5. STREAMLIT WIDGETS HYPER-MODERN REFACTOR --- */
-        div[data-baseweb="input"] > div,
-        div[data-baseweb="select"] > div {{
-            background-color: var(--bg-input) !important;
-            color: var(--text-primary) !important;
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 11px !important;
-            min-height: 2.6rem !important;
-            backdrop-filter: blur(12px) !important;
-            box-shadow: var(--shadow-sm) !important;
-            transition: all 0.2s var(--ease-out) !important;
+        :root {{
+{css_vars}
+            --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-serif: 'Source Serif 4', Georgia, Cambria, serif;
+            --font-mono: 'IBM Plex Mono', monospace;
+            --body-size: {body_px};
+            --title-size: {title_px};
+            --h3-size: {h3_px};
         }}
-        div[data-baseweb="input"] > div:focus-within,
-        div[data-baseweb="select"] > div:focus-within {{
-            border-color: var(--border-focus) !important;
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15) !important;
-        }}
-        div[data-baseweb="input"] input {{
-            color: var(--text-primary) !important;
-            -webkit-text-fill-color: var(--text-primary) !important;
-            font-family: var(--font-ui) !important;
-            font-size: 0.88rem !important;
-            font-weight: 500 !important;
-        }}
-        div[data-baseweb="input"] input::placeholder {{
-            color: var(--text-muted) !important;
-            -webkit-text-fill-color: var(--text-muted) !important;
-        }}
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] div {{
+
+        .stApp {{
+            background-color: var(--bg-app) !important;
             color: var(--text-primary) !important;
             font-family: var(--font-ui) !important;
-            font-size: 0.86rem !important;
-            font-weight: 600 !important;
+        }}
+
+        .block-container {{
+            padding-top: 1.0rem !important;
+            padding-bottom: 4rem !important;
+            max-width: 1460px !important;
+        }}
+
+        /* Cohesive, quieter application chrome */
+        div[data-testid="stHorizontalBlock"] {{ gap: 0.9rem; }}
+        div[data-testid="stTextInput"] label,
+        div[data-testid="stSelectbox"] label {{ font-weight: 600 !important; }}
+        .stButton > button {{ min-height: 2.25rem !important; }}
+        div[data-testid="stExpander"] {{ border-color: var(--border-subtle) !important; border-radius: 9px !important; }}
+        div[data-testid="stExpander"] summary {{ font-weight: 600 !important; }}
+        section[data-testid="stSidebar"] {{ padding-top: 1rem !important; }}
+
+        /* Ensure parent flex/grid containers allow position: sticky on the Right Navigator column */
+        div[data-testid="stHorizontalBlock"] {{
+            align-items: flex-start !important;
+        }}
+
+        /* Make any column containing #sticky-right-nav-marker follow the user smoothly on scroll */
+        div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
+        div[data-testid="column"]:has(#sticky-right-nav-marker) {{
+            position: sticky !important;
+            top: 1.0rem !important;
+            align-self: flex-start !important;
+            max-height: calc(100vh - 2.0rem) !important;
+            overflow-y: auto !important;
+            padding-right: 0.25rem !important;
+            z-index: 40 !important;
+        }}
+
+        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar {{
+            width: 5px;
+        }}
+        div[data-testid="stColumn"]:has(#sticky-right-nav-marker)::-webkit-scrollbar-thumb {{
+            background-color: var(--border-subtle);
+            border-radius: 4px;
+        }}
+
+        /* Persistent HTML TOC Links inside the Right Sidebar Navigator */
+        .toc-nav-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 0.32rem;
+            margin-top: 0.5rem;
+        }}
+        a.toc-jump-link {{
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            padding: 0.46rem 0.68rem;
+            border-radius: 7px;
+            background-color: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-primary) !important;
+            text-decoration: none !important;
+            font-family: var(--font-ui);
+            font-size: 0.81rem;
+            font-weight: 600;
+            line-height: 1.25;
+            transition: all 0.14s ease;
+        }}
+        a.toc-jump-link:hover {{
+            background-color: var(--btn-hover-bg);
+            border-color: var(--accent-navy);
+            color: var(--accent-navy) !important;
+            transform: translateX(2px);
+        }}
+        .toc-sec-badge {{
+            background-color: var(--bg-header);
+            color: #FFFFFF !important;
+            font-family: var(--font-mono);
+            font-size: 0.71rem;
+            font-weight: 600;
+            padding: 0.12rem 0.42rem;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }}
+
+        section[data-testid="stSidebar"] {{
+            background-color: var(--bg-sidebar) !important;
+            border-right: 1px solid var(--border-subtle) !important;
+        }}
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3,
+        section[data-testid="stSidebar"] h4,
+        section[data-testid="stSidebar"] h5 {{
+            color: var(--text-primary) !important;
+        }}
+        /* Keep the complete case list as a visible, clickable filing-cabinet list. */
+        section[data-testid="stSidebar"] div[role="radiogroup"] {{
+            gap: 0.12rem !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
+            align-items: flex-start !important;
+            padding: 0.28rem 0.35rem !important;
+            border-radius: 6px !important;
+            line-height: 1.35 !important;
+        }}
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
+            background: var(--btn-hover-bg) !important;
         }}
 
         .stButton > button,
@@ -1357,245 +1475,216 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             background-color: var(--btn-bg) !important;
             color: var(--btn-text) !important;
             border: 1px solid var(--btn-border) !important;
-            border-radius: 11px !important;
+            border-radius: 8px !important;
             font-family: var(--font-ui) !important;
             font-weight: 600 !important;
-            font-size: 0.84rem !important;
-            letter-spacing: -0.01em !important;
-            min-height: 2.55rem !important;
-            box-shadow: var(--shadow-sm) !important;
-            transition: all 0.2s var(--ease-out) !important;
+            font-size: 0.83rem !important;
+            transition: all 0.15s ease !important;
+            min-height: 2.4rem !important;
         }}
         .stButton > button:hover,
         .stPopover > div > button:hover {{
             background-color: var(--btn-hover-bg) !important;
-            border-color: var(--accent-primary) !important;
-            color: var(--accent-primary) !important;
-            transform: translateY(-1px);
+            border-color: var(--accent-navy) !important;
+            color: var(--accent-navy) !important;
+        }}
+        .stButton > button p, .stButton > button span {{
+            color: inherit !important;
         }}
 
-        div[data-testid="stExpander"] {{
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="select"] > div {{
+            background-color: var(--bg-input) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--btn-border) !important;
+            border-radius: 8px !important;
+            min-height: 2.4rem !important;
+        }}
+        div[data-baseweb="input"] input {{
+            color: var(--text-primary) !important;
+            -webkit-text-fill-color: var(--text-primary) !important;
+        }}
+        div[data-baseweb="input"] input::placeholder {{
+            color: var(--text-muted) !important;
+            -webkit-text-fill-color: var(--text-muted) !important;
+            opacity: 1 !important;
+        }}
+        div[data-baseweb="select"] span,
+        div[data-baseweb="select"] div {{
+            color: var(--text-primary) !important;
+        }}
+        ul[data-baseweb="menu"], div[data-baseweb="popover"] {{
             background-color: var(--bg-surface) !important;
-            backdrop-filter: blur(14px) !important;
+            color: var(--text-primary) !important;
             border: 1px solid var(--border-subtle) !important;
-            border-radius: 12px !important;
-            box-shadow: var(--shadow-sm) !important;
-            transition: all 0.2s var(--ease-out) !important;
         }}
-        div[data-testid="stExpander"]:hover {{
-            border-color: var(--accent-primary) !important;
-        }}
-        div[data-testid="stExpander"] summary {{
-            font-family: var(--font-ui) !important;
-            font-weight: 600 !important;
-            font-size: 0.88rem !important;
-            color: var(--text-primary) !important;
-            padding: 0.65rem 0.95rem !important;
-        }}
-
-        /* --- 6. SIDEBAR FILING CABINET --- */
-        section[data-testid="stSidebar"] {{
-            background-color: var(--bg-sidebar) !important;
-            border-right: 1px solid var(--border-subtle) !important;
-            padding-top: 1.5rem !important;
-        }}
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] span,
-        section[data-testid="stSidebar"] label {{
-            font-family: var(--font-ui) !important;
+        li[role="option"] {{
+            background-color: var(--bg-surface) !important;
             color: var(--text-primary) !important;
         }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] {{
-            gap: 0.25rem !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label {{
-            padding: 0.45rem 0.65rem !important;
-            border-radius: 9px !important;
-            background: transparent !important;
-            transition: all 0.16s var(--ease-out) !important;
-            cursor: pointer !important;
-        }}
-        section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {{
-            background: var(--btn-hover-bg) !important;
-            transform: translateX(2px);
+        li[role="option"]:hover {{
+            background-color: var(--btn-hover-bg) !important;
         }}
 
-        /* --- 7. INSTITUTIONAL GLASS MASTHEAD --- */
+        details[data-testid="stExpander"] {{
+            background-color: var(--bg-surface) !important;
+            border: 1px solid var(--border-subtle) !important;
+            border-radius: 8px !important;
+        }}
+        details[data-testid="stExpander"] summary,
+        details[data-testid="stExpander"] summary p,
+        details[data-testid="stExpander"] summary span,
+        details[data-testid="stExpander"] div {{
+            color: var(--text-primary) !important;
+        }}
+
         .library-masthead {{
-            background: var(--bg-header);
+            background-color: var(--bg-header);
             color: #FFFFFF;
-            padding: 1.35rem 2rem;
-            border-radius: 16px;
-            margin-bottom: 1.25rem;
+            padding: 1.05rem 1.65rem;
+            border-radius: 10px;
+            margin-bottom: 0.85rem;
             display: flex;
             align-items: center;
             justify-content: space-between;
             flex-wrap: wrap;
-            gap: 1.2rem;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            gap: 1rem;
+            border-bottom: 3px solid var(--accent-gold);
             box-shadow: var(--shadow-card);
-            position: relative;
-            overflow: hidden;
         }}
-        .library-masthead::before {{
-            content: "";
-            position: absolute;
-            top: 0; left: 0; right: 0; height: 3px;
-            background: linear-gradient(90deg, var(--accent-gold), var(--accent-sage), var(--accent-primary));
-        }}
-        .masthead-brand {{ display: flex; align-items: center; gap: 1rem; }}
-        .masthead-icon {{
-            font-size: 2rem;
-            line-height: 1;
-            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.25));
-        }}
+        .masthead-brand {{ display: flex; align-items: center; gap: 0.85rem; }}
+        .masthead-icon {{ font-size: 1.7rem; line-height: 1; }}
         .masthead-title {{
             font-family: var(--font-serif);
-            font-size: 1.5rem;
+            font-size: 1.4rem;
             font-weight: 700;
-            letter-spacing: -0.015em;
-            color: #F8FAFC !important;
+            color: #FFFFFF !important;
             margin: 0;
-            line-height: 1.2;
         }}
         .masthead-subtitle {{
             font-family: var(--font-ui);
-            font-size: 0.8rem;
-            font-weight: 500;
-            color: #94A3B8 !important;
-            margin-top: 0.25rem;
-            letter-spacing: 0.01em;
+            font-size: 0.77rem;
+            color: #CBD5E1 !important;
+            margin: 0;
         }}
         .masthead-stats {{ display: flex; gap: 0.65rem; align-items: center; flex-wrap: wrap; }}
         .stat-pill {{
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            color: #F1F5F9 !important;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            color: #F8FAFC !important;
             font-family: var(--font-mono);
-            font-size: 0.76rem;
-            font-weight: 600;
-            padding: 0.35rem 0.75rem;
-            border-radius: 9999px;
-            backdrop-filter: blur(8px);
+            font-size: 0.74rem;
+            padding: 0.28rem 0.65rem;
+            border-radius: 6px;
         }}
 
-        /* --- 8. CENTRAL EDITORIAL READING PANE (Notion/Medium Level) --- */
         .reader-sheet {{
             background-color: var(--bg-surface);
-            backdrop-filter: blur(20px);
             border: 1px solid var(--border-subtle);
-            border-radius: 18px;
-            padding: 3.2rem 3.8rem;
-            max-width: 800px;
-            margin: 0 auto 3rem auto;
+            border-radius: 10px;
+            padding: 2.6rem 3.1rem;
+            max-width: 820px;
+            margin: 0 auto 2rem auto;
             box-shadow: var(--shadow-card);
             color: var(--text-primary);
-            position: relative;
         }}
 
         .breadcrumb-bar {{
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 0.55rem;
-            margin-bottom: 1.3rem;
+            gap: 0.5rem;
+            margin-bottom: 0.9rem;
         }}
         .subj-badge {{
             background-color: var(--bg-header);
             color: #FFFFFF !important;
             font-family: var(--font-ui);
-            font-size: 0.74rem;
-            font-weight: 700;
-            padding: 0.28rem 0.75rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.25rem 0.7rem;
             border-radius: 6px;
-            letter-spacing: 0.01em;
         }}
         .cat-badge {{
             background-color: var(--callout-blue-bg);
-            color: var(--accent-primary) !important;
+            color: var(--accent-navy) !important;
             border: 1px solid var(--border-subtle);
             font-family: var(--font-ui);
-            font-size: 0.74rem;
-            font-weight: 700;
-            padding: 0.28rem 0.75rem;
+            font-size: 0.76rem;
+            font-weight: 600;
+            padding: 0.25rem 0.7rem;
             border-radius: 6px;
         }}
         .gr-badge {{
             background-color: var(--callout-gold-bg);
-            color: var(--accent-gold) !important;
-            border: 1px solid var(--border-subtle);
+            color: var(--text-primary) !important;
             font-family: var(--font-mono);
-            font-size: 0.74rem;
-            font-weight: 600;
-            padding: 0.28rem 0.7rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            padding: 0.25rem 0.65rem;
             border-radius: 6px;
         }}
 
         .reader-sheet h1.case-main-title {{
             font-family: var(--font-serif) !important;
-            font-size: var(--title-size) !important;
+            font-size: {title_px} !important;
             font-weight: 700 !important;
-            color: var(--text-primary) !important;
-            line-height: 1.24 !important;
-            margin: 0.35rem 0 0.85rem 0 !important;
-            letter-spacing: -0.02em !important;
+            color: var(--accent-navy) !important;
+            line-height: 1.25 !important;
+            margin: 0.25rem 0 0.75rem 0 !important;
+            letter-spacing: -0.015em !important;
         }}
-
         .case-meta-row {{
             font-family: var(--font-ui);
-            font-size: 0.82rem;
-            font-weight: 500;
+            font-size: 0.84rem;
             color: var(--text-muted);
-            padding-bottom: 1.4rem;
-            margin-bottom: 1.8rem;
+            padding-bottom: 1.15rem;
+            margin-bottom: 1.5rem;
             border-bottom: 1px solid var(--border-subtle);
             display: flex;
             flex-wrap: wrap;
-            gap: 0.9rem;
+            gap: 1rem;
             align-items: center;
         }}
         .source-link {{
             color: var(--accent-sage) !important;
             font-weight: 600;
             text-decoration: none;
-            transition: opacity 0.15s ease;
         }}
-        .source-link:hover {{ opacity: 0.8; text-decoration: underline; }}
+        .source-link:hover {{ text-decoration: underline; }}
 
         .digest-section-block {{
-            margin-top: 2.6rem;
-            padding-top: 0.2rem;
-            scroll-margin-top: 36px;
+            margin-top: 2.1rem;
+            padding-top: 0.25rem;
+            scroll-margin-top: 28px;
         }}
         .digest-section-header {{
             display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            border-bottom: 1px solid var(--border-subtle);
-            padding-bottom: 0.65rem;
-            margin-bottom: 1.35rem;
+            align-items: baseline;
+            gap: 0.65rem;
+            border-bottom: 2px solid var(--border-subtle);
+            padding-bottom: 0.55rem;
+            margin-bottom: 1.1rem;
         }}
         .sec-num-badge {{
-            background: var(--bg-elevated);
-            color: var(--accent-primary) !important;
+            background-color: var(--bg-header);
+            color: #FFFFFF !important;
             font-family: var(--font-mono);
-            font-size: 0.76rem;
-            font-weight: 700;
+            font-size: 0.78rem;
+            font-weight: 600;
             padding: 0.2rem 0.55rem;
-            border-radius: 6px;
-            border: 1px solid var(--border-subtle);
+            border-radius: 5px;
             flex-shrink: 0;
         }}
         .reader-sheet h3.sec-heading-text {{
             font-family: var(--font-ui) !important;
-            font-size: var(--h3-size) !important;
+            font-size: {h3_px} !important;
             font-weight: 700 !important;
-            color: var(--text-primary) !important;
+            color: var(--accent-navy) !important;
             margin: 0 !important;
-            letter-spacing: -0.015em !important;
+            line-height: 1.3 !important;
         }}
 
-        /* --- 9. TYPOGRAPHY & CALLOUT BLOCKS --- */
         .reader-sheet .legal-prose,
         .reader-sheet .digest-p,
         .reader-sheet .timeline-event,
@@ -1605,289 +1694,221 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
         .reader-sheet .quote-callout-body,
         .reader-sheet .recit-callout {{
             font-family: var(--font-serif) !important;
-            font-size: var(--body-size) !important;
-            line-height: 1.76 !important;
+            font-size: {body_px} !important;
+            line-height: 1.72 !important;
             color: var(--text-primary) !important;
             text-align: left !important;
         }}
-        .digest-p {{ margin: 0 0 1.15rem 0 !important; }}
+        .digest-p {{ margin: 0 0 0.95rem 0 !important; }}
         .inline-lead {{
             font-family: var(--font-ui) !important;
-            font-size: 0.9em !important;
-            color: var(--accent-primary) !important;
+            font-size: 0.92em !important;
+            color: var(--accent-navy) !important;
             font-weight: 700 !important;
-            letter-spacing: -0.01em;
         }}
         .digest-subheading {{
             font-family: var(--font-ui) !important;
-            font-size: 1.02em !important;
-            font-weight: 700 !important;
-            color: var(--text-primary) !important;
-            margin: 1.5rem 0 0.65rem 0 !important;
-            letter-spacing: -0.01em;
+            font-size: 1.05em !important;
+            font-weight: 600 !important;
+            color: var(--accent-navy) !important;
+            margin: 1.25rem 0 0.5rem 0 !important;
         }}
         .party-header {{
             font-family: var(--font-ui) !important;
-            font-size: 0.92rem !important;
+            font-size: 0.95rem !important;
             font-weight: 700 !important;
-            color: var(--accent-primary) !important;
+            color: var(--accent-navy) !important;
             background-color: var(--bg-elevated);
             border-left: 3px solid var(--accent-sage);
-            padding: 0.65rem 1rem;
-            margin: 1.25rem 0 0.85rem 0;
-            border-radius: 0 8px 8px 0;
-            box-shadow: var(--shadow-sm);
+            padding: 0.5rem 0.9rem;
+            margin: 1.1rem 0 0.7rem 0;
+            border-radius: 0 6px 6px 0;
         }}
 
         .trigger-box {{
             background-color: var(--callout-green-bg);
             border-left: 4px solid var(--accent-sage);
-            padding: 1.15rem 1.4rem;
-            border-radius: 0 12px 12px 0;
-            margin: 1.25rem 0 1.5rem 0;
-            box-shadow: var(--shadow-sm);
+            padding: 1rem 1.25rem;
+            border-radius: 0 8px 8px 0;
+            margin: 1rem 0 1.35rem 0;
         }}
         .trigger-title {{
             font-family: var(--font-ui) !important;
-            font-size: 0.8rem !important;
+            font-size: 0.82rem !important;
             font-weight: 700 !important;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.04em;
             color: var(--accent-sage) !important;
-            margin-bottom: 0.45rem;
+            margin-bottom: 0.35rem;
         }}
 
         .quote-callout, .legal-blockquote {{
             background-color: var(--callout-gold-bg);
             border-left: 4px solid var(--accent-gold);
-            padding: 1.15rem 1.4rem;
-            border-radius: 0 12px 12px 0;
-            margin: 1.25rem 0;
+            padding: 0.95rem 1.25rem;
+            border-radius: 0 8px 8px 0;
+            margin: 0.95rem 0;
             font-style: italic;
-            box-shadow: var(--shadow-sm);
         }}
         .quote-callout-label {{
             font-family: var(--font-ui) !important;
             font-style: normal !important;
-            font-size: 0.76rem !important;
+            font-size: 0.78rem !important;
             font-weight: 700 !important;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--accent-gold) !important;
-            margin-bottom: 0.4rem;
+            letter-spacing: 0.04em;
+            color: var(--accent-navy) !important;
+            margin-bottom: 0.35rem;
         }}
 
         .recit-callout {{
             background-color: var(--callout-blue-bg);
             border-left: 4px solid var(--accent-primary);
-            padding: 1.15rem 1.4rem;
-            border-radius: 0 12px 12px 0;
-            margin: 1.15rem 0 1.5rem 0;
-            box-shadow: var(--shadow-sm);
+            padding: 0.95rem 1.2rem;
+            border-radius: 0 8px 8px 0;
+            margin: 0.85rem 0 1.25rem 0;
         }}
         .recit-label {{
             font-family: var(--font-ui) !important;
-            font-size: 0.85rem !important;
+            font-size: 0.86rem !important;
             font-weight: 700 !important;
-            color: var(--accent-primary) !important;
+            color: var(--accent-navy) !important;
         }}
 
         .issue-verdict-banner {{
             background-color: var(--bg-elevated);
             border: 1px solid var(--border-subtle);
-            border-left: 4px solid var(--accent-primary);
-            padding: 0.85rem 1.15rem;
-            border-radius: 8px;
-            margin: 1.15rem 0 0.85rem 0;
-            box-shadow: var(--shadow-sm);
+            border-left: 4px solid var(--accent-navy);
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            margin: 1rem 0 0.75rem 0;
         }}
         .verdict-tag {{
             font-family: var(--font-ui) !important;
             font-weight: 700 !important;
-            color: var(--accent-primary) !important;
+            color: var(--accent-navy) !important;
         }}
 
         .fallo-box {{
             background-color: var(--bg-elevated);
             border: 1px solid var(--border-subtle);
             border-top: 3px solid var(--accent-gold);
-            padding: 1.35rem 1.6rem;
-            border-radius: 12px;
-            margin: 1.35rem 0;
-            box-shadow: var(--shadow-card);
+            padding: 1.1rem 1.35rem;
+            border-radius: 8px;
+            margin: 1.1rem 0;
         }}
         .fallo-title {{
             font-family: var(--font-ui) !important;
-            font-size: 0.8rem !important;
+            font-size: 0.82rem !important;
             font-weight: 700 !important;
             text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: var(--accent-gold) !important;
-            margin-bottom: 0.5rem;
+            letter-spacing: 0.04em;
+            color: var(--accent-navy) !important;
+            margin-bottom: 0.4rem;
         }}
 
         .timeline-row {{
             display: grid;
-            grid-template-columns: 160px 1fr;
-            gap: 1.15rem;
-            padding: 0.8rem 0;
+            grid-template-columns: 165px 1fr;
+            gap: 1rem;
+            padding: 0.65rem 0;
             border-bottom: 1px dashed var(--border-subtle);
             align-items: baseline;
         }}
         .timeline-date {{
             font-family: var(--font-ui) !important;
-            font-size: 0.85rem !important;
+            font-size: 0.88rem !important;
             font-weight: 700 !important;
-            color: var(--accent-primary) !important;
+            color: var(--accent-navy) !important;
         }}
 
         .numbered-item {{
             display: flex;
-            gap: 0.85rem;
+            gap: 0.75rem;
             align-items: flex-start;
-            margin-bottom: 0.95rem;
+            margin-bottom: 0.85rem;
         }}
         .num-circle {{
             font-family: var(--font-mono) !important;
-            font-size: 0.78rem !important;
-            font-weight: 700 !important;
-            color: var(--accent-primary) !important;
+            font-size: 0.82rem !important;
+            font-weight: 600 !important;
+            color: var(--accent-navy) !important;
             background-color: var(--callout-blue-bg);
-            padding: 0.18rem 0.55rem;
-            border-radius: 6px;
+            padding: 0.15rem 0.5rem;
+            border-radius: 5px;
             flex-shrink: 0;
-            margin-top: 0.2rem;
-            border: 1px solid var(--border-subtle);
+            margin-top: 0.15rem;
         }}
         .issue-pill {{
             font-family: var(--font-ui) !important;
-            font-size: 0.72rem !important;
+            font-size: 0.7rem !important;
             font-weight: 700 !important;
-            padding: 0.18rem 0.55rem;
-            border-radius: 6px;
+            padding: 0.15rem 0.5rem;
+            border-radius: 4px;
             margin-right: 0.4rem;
             vertical-align: middle;
         }}
         .issue-primary {{ background-color: var(--accent-gold); color: #FFFFFF !important; }}
-        .issue-secondary {{ background-color: var(--callout-blue-bg); color: var(--accent-primary) !important; }}
+        .issue-secondary {{ background-color: var(--callout-blue-bg); color: var(--accent-navy) !important; }}
 
-        /* --- 10. STICKY ON-THIS-CASE NAVIGATOR --- */
-        div[data-testid="stHorizontalBlock"] {{
-            align-items: flex-start !important;
-        }}
-        div[data-testid="stColumn"]:has(#sticky-right-nav-marker),
-        div[data-testid="column"]:has(#sticky-right-nav-marker) {{
-            position: sticky !important;
-            top: 1.25rem !important;
-            align-self: flex-start !important;
-            max-height: calc(100vh - 2.5rem) !important;
-            overflow-y: auto !important;
-            padding-right: 0.35rem !important;
-            z-index: 40 !important;
-        }}
         .navigator-card {{
             background-color: var(--bg-surface);
-            backdrop-filter: blur(16px);
             border: 1px solid var(--border-subtle);
-            border-radius: 14px;
-            padding: 1.15rem 1.2rem;
+            border-radius: 10px;
+            padding: 1rem 1.1rem;
             box-shadow: var(--shadow-card);
-            margin-bottom: 0.85rem;
+            margin-bottom: 0.75rem;
         }}
         .navigator-title {{
             font-family: var(--font-ui);
-            font-size: 0.76rem;
+            font-size: 0.81rem;
             font-weight: 700;
             text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: var(--text-muted);
-            margin-bottom: 0.65rem;
+            letter-spacing: 0.05em;
+            color: var(--accent-navy);
+            margin-bottom: 0.35rem;
             padding-bottom: 0.45rem;
-            border-bottom: 1px solid var(--border-subtle);
-        }}
-        .toc-nav-list {{
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-        }}
-        a.toc-jump-link {{
-            display: flex;
-            align-items: center;
-            gap: 0.6rem;
-            padding: 0.48rem 0.72rem;
-            border-radius: 8px;
-            background-color: var(--bg-elevated);
-            border: 1px solid var(--border-subtle);
-            color: var(--text-primary) !important;
-            text-decoration: none !important;
-            font-family: var(--font-ui);
-            font-size: 0.8rem;
-            font-weight: 600;
-            line-height: 1.3;
-            transition: all 0.16s var(--ease-out);
-        }}
-        a.toc-jump-link:hover {{
-            background-color: var(--btn-hover-bg);
-            border-color: var(--accent-primary);
-            color: var(--accent-primary) !important;
-            transform: translateX(3px);
-        }}
-        .toc-sec-badge {{
-            background-color: var(--bg-header);
-            color: #FFFFFF !important;
-            font-family: var(--font-mono);
-            font-size: 0.7rem;
-            font-weight: 700;
-            padding: 0.12rem 0.45rem;
-            border-radius: 5px;
-            flex-shrink: 0;
+            border-bottom: 2px solid var(--border-subtle);
         }}
 
-        /* --- 11. SEARCH CARDS --- */
         mark.search-mark {{
             background-color: var(--mark-bg);
             color: var(--mark-text);
-            padding: 0.08rem 0.32rem;
-            border-radius: 4px;
+            padding: 0.05rem 0.25rem;
+            border-radius: 3px;
             font-weight: 600;
         }}
         .search-card {{
             background-color: var(--bg-surface);
-            backdrop-filter: blur(14px);
             border: 1px solid var(--border-subtle);
-            border-left: 4px solid var(--accent-primary);
-            border-radius: 12px;
-            padding: 1.35rem 1.6rem;
-            margin-bottom: 0.95rem;
+            border-left: 4px solid var(--accent-navy);
+            border-radius: 8px;
+            padding: 1.15rem 1.35rem;
+            margin-bottom: 0.85rem;
             box-shadow: var(--shadow-card);
-            transition: transform 0.18s var(--ease-out);
-        }}
-        .search-card:hover {{
-            transform: translateY(-2px);
         }}
         .search-snippet {{
             font-family: var(--font-serif);
-            font-size: 1rem;
+            font-size: 0.96rem;
             color: var(--text-secondary);
-            line-height: 1.62;
-            margin-top: 0.65rem;
+            line-height: 1.55;
+            margin-top: 0.5rem;
         }}
 
-        /* --- 12. RESPONSIVE BREAKPOINTS --- */
-        @media (max-width: 860px) {{
-            .reader-sheet {{ padding: 2.2rem 1.8rem; max-width: 100%; }}
+        @media (max-width: 768px) {{
+            .reader-sheet {{ padding: 1.75rem 1.5rem; max-width: 100%; }}
             div[data-testid="stColumn"]:has(#sticky-right-nav-marker) {{
                 position: static !important;
                 max-height: none !important;
             }}
         }}
         @media (max-width: 640px) {{
-            .block-container {{ padding-left: 0.65rem !important; padding-right: 0.65rem !important; }}
-            .library-masthead {{ padding: 1.1rem 1.25rem; }}
-            .masthead-title {{ font-size: 1.25rem; }}
-            .reader-sheet {{ padding: 1.6rem 1.2rem; border-radius: 12px; }}
-            .reader-sheet h1.case-main-title {{ font-size: 1.5rem !important; }}
-            .timeline-row {{ grid-template-columns: 1fr; gap: 0.25rem; }}
+            .block-container {{ padding-left: 0.75rem !important; padding-right: 0.75rem !important; }}
+            .library-masthead {{ padding: 0.9rem 1.1rem; }}
+            .masthead-title {{ font-size: 1.18rem; }}
+            .reader-sheet {{ padding: 1.25rem 1.05rem; border-radius: 8px; }}
+            .reader-sheet h1.case-main-title {{ font-size: 1.45rem !important; }}
+            .timeline-row {{ grid-template-columns: 1fr; gap: 0.2rem; }}
         }}
 
         {focus_reading_css}
@@ -1902,6 +1923,8 @@ cases, bm25, tokenized_corpus = load_library()
 if cases and not st.session_state.selected_lookup_key:
     st.session_state.selected_lookup_key = cases[0]["_uid"]
 
+# Search state is available before rendering the sidebar, so the left case list can
+# immediately reflect the same global search as the main results area.
 query_str = st.session_state.get("active_search_query", "").strip()
 query_tokens = [token for token in re.split(r"\W+", query_str.lower()) if token]
 ranked_pairs = rank_case_matches(query_str, cases, bm25)
@@ -1913,13 +1936,13 @@ inject_custom_css(
 )
 
 
-# --- 7. SIDEBAR: 2-TIER FILING CABINET + CASE LIST ---
+# --- 7. SIDEBAR: 2-TIER FILING CABINET + PERSISTENT CASE LIST ---
 with st.sidebar:
     st.markdown("### 🗄️ Filing Cabinet")
-    st.caption("Structured catalog of indexed jurisprudence")
+    st.caption("Browse by subject, topic, or case")
 
     if not cases:
-        st.warning("No cases found in `case_library/master_library.jsonl`. Load cases to initialize the library.")
+        st.warning("No cases found in `case_library/master_library.jsonl`. Run the Desktop Generator or import a `.docx` casebook.")
     else:
         all_subjects = sorted({c.get("subject", "General Jurisprudence") for c in cases})
         subj_counts = {subject: sum(1 for c in cases if c.get("subject") == subject) for subject in all_subjects}
@@ -1968,6 +1991,9 @@ with st.sidebar:
             else [c for c in subj_filtered if c.get("topic") == chosen_top]
         )
 
+        # The main search is global, so the persistent sidebar list mirrors every
+        # matching result across the library. With no query, it shows the complete
+        # case list for the selected subject/topic folder.
         if query_str:
             filtered_cases = [cases[idx] for idx, _score in ranked_pairs]
             list_heading = f"Search Matches ({len(filtered_cases)})"
@@ -1978,10 +2004,13 @@ with st.sidebar:
         st.divider()
         st.markdown(f"**{list_heading}**")
         if query_str:
-            st.caption("Global matches across all courses & topics")
+            st.caption("Global results · ranked across all subjects and topics")
 
         if filtered_cases:
             uid_list = [case["_uid"] for case in filtered_cases]
+            # Keep the radio selection synchronized with the active case whenever
+            # that case is present. During a search, the reader selection is not
+            # changed until the user actually clicks a result in this list.
             if st.session_state.selected_lookup_key in uid_list:
                 radio_default = st.session_state.selected_lookup_key
             else:
@@ -2003,12 +2032,12 @@ with st.sidebar:
             )
         else:
             if query_str:
-                st.info("No matching decisions found for this query.")
+                st.info("No cases match this search. Try a broader phrase, party name, G.R. number, or doctrine.")
             else:
-                st.info("No decisions cataloged under this topic.")
+                st.info("No cases are available in this folder.")
 
 
-# --- 8. TOP MASTHEAD & GLASS COMMAND BAR ---
+# --- 8. TOP INSTITUTIONAL MASTHEAD & COMPACT COMMAND BAR ---
 unique_subjects_count = len({c.get("subject", "General Jurisprudence") for c in cases})
 unique_topics_count = len({c.get("topic", "General Topic") for c in cases})
 masthead_html = (
@@ -2017,7 +2046,7 @@ masthead_html = (
     "<span class='masthead-icon'>⚖️</span>"
     "<div>"
     "<div class='masthead-title'>Philippine Jurisprudence Library</div>"
-    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • Two-Tier Syllabus Matrix • Lexical Research Engine</div>"
+    "<div class='masthead-subtitle'>Full-Text Substitute Case Digests • 2-Tier Subject &amp; Topic Matrix • Lexical Research Engine</div>"
     "</div>"
     "</div>"
     "<div class='masthead-stats'>"
@@ -2029,6 +2058,7 @@ masthead_html = (
 )
 st.markdown(masthead_html, unsafe_allow_html=True)
 
+# Compact command bar: search + workflow + typography + sequential view mode.
 mode_options = [
     "📖 First-Time Read",
     "⚡ Exam & Recit Review",
@@ -2036,13 +2066,13 @@ mode_options = [
 ]
 size_options = ["Compact", "Standard", "Comfortable"]
 
-cmd_columns = st.columns([4.2, 1.8, 1.25, 1.15], gap="small")
+cmd_columns = st.columns([4.4, 1.65, 1.2, 1.05], gap="small")
 cmd_c1, cmd_c2, cmd_c3, cmd_c4 = cmd_columns
 with cmd_c1:
     st.text_input(
         "Search jurisprudence",
         key="active_search_query",
-        placeholder="Search decisions, G.R. numbers, doctrines, legal principles, Latin maxims…",
+        placeholder="Search case titles, G.R. numbers, subjects, topics, doctrines, or Latin maxims…",
         label_visibility="collapsed",
     )
 with cmd_c2:
@@ -2051,7 +2081,7 @@ with cmd_c2:
         options=mode_options,
         index=mode_options.index(st.session_state.study_mode),
         label_visibility="collapsed",
-        help="Select lens for this decision.",
+        help="Choose the reading lens for this case.",
     )
     if selected_mode != st.session_state.study_mode:
         st.session_state.study_mode = selected_mode
@@ -2084,20 +2114,18 @@ with cmd_c4:
         key="cycle_view_mode_btn",
         on_click=_cb_cycle_view_mode,
         use_container_width=True,
-        help="Cycle through Light -> Dark -> Focus Light -> Focus Dark.",
+        help="Cycle through Light → Dark → Focus Light → Focus Dark → Light.",
     )
-
-
-# --- 9. BM25 LEXICAL SEARCH VIEW ---
+# --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
 if query_str and bm25 and cases:
+
     st.markdown(
-        f"<div style='font-family: var(--font-ui); font-size: 1.15rem; font-weight: 700; margin: 1.25rem 0 0.25rem 0;'>🔎 Lexical search matches for <em>'{html.escape(query_str)}'</em> ({len(ranked_pairs)} found)</div>",
-        unsafe_allow_html=True,
+        f"#### 🔎 Search results for *'{html.escape(query_str)}'* · {len(ranked_pairs)} matching cases"
     )
-    st.caption("Select any decision from the left Filing Cabinet to view the complete digest.")
+    st.caption("Choose a matching case from the left Filing Cabinet to open it. The sidebar retains the complete ranked result list.")
 
     if not ranked_pairs:
-        st.info("No lexical matches found. Consider querying broader doctrine terms, G.R. numbers, or party names.")
+        st.info("No exact lexical matches found. Try searching for a broader doctrinal term, G.R. number, or party surname.")
     else:
         for idx, score_val in ranked_pairs[:15]:
             match_case = cases[idx]
@@ -2113,7 +2141,7 @@ if query_str and bm25 and cases:
                 f"<span class='gr-badge'>{html.escape(match_case.get('lookup_key', ''))}</span>"
                 f"<span class='gr-badge'>BM25 Score: {score_val:.2f}</span>"
                 "</div>"
-                f"<div style='font-family: var(--font-serif); font-size: 1.32rem; font-weight: 700; color: var(--text-primary); line-height: 1.3;'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
+                f"<div style='font-family: var(--font-serif); font-size: 1.25rem; font-weight: 700; color: var(--accent-navy);'>{format_inline_markdown(match_case.get('citation', 'Untitled'), query_tokens)}</div>"
                 f"<div class='search-snippet'>{snippet_html}</div>"
                 "</div>"
             )
@@ -2121,16 +2149,16 @@ if query_str and bm25 and cases:
 
             if quote_preview:
                 with st.popover("📋 Copy Citation & Holding"):
-                    st.caption("Formatted for legal citations and pleadings:")
+                    st.caption("Ready to paste into legal pleadings or notes:")
                     st.code(f"{match_case.get('citation', '')}\n\n{quote_preview}", language="markdown")
-            st.markdown("<div style='margin-bottom: 0.65rem;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 0.75rem;'></div>", unsafe_allow_html=True)
 
     st.stop()
 
 
-# --- 10. MAIN CASE READER & PERSISTENT STICKY NAVIGATOR ---
+# --- 10. MAIN CASE READER & PERSISTENT RIGHT SIDEBAR NAVIGATOR ---
 if not cases:
-    st.info("👈 Place `master_library.jsonl` in `case_library/` to load your library.")
+    st.info("👈 Add `master_library.jsonl` to `case_library/` to browse and read your digested jurisprudence.")
     st.stop()
 
 active_case = next(
@@ -2146,43 +2174,45 @@ quotes = parsed["quotes"]
 issues_list = parsed["issues"]
 
 reader_container, nav_container = st.columns(
-    [3.25, 1.05] if st.session_state.focus_mode else [3.35, 1.15],
+    [3.15, 1.05] if st.session_state.focus_mode else [3.25, 1.15],
     gap="large",
 )
 
-# --- 10B. PERSISTENT STICKY RIGHT NAVIGATOR ---
+
+# --- 10B. PERSISTENT STICKY RIGHT SIDEBAR: STUDY NAVIGATOR ---
 with nav_container:
+    # Marker id '#sticky-right-nav-marker' activates CSS position: sticky on this entire column
     toc_links_html = "".join(
         f"<a class='toc-jump-link' href='#{html.escape(sec['anchor'])}' target='_self'>"
         f"<span class='toc-sec-badge'>{html.escape(sec['num'])}</span>"
-        f"<span>{html.escape(sec['short_title'][:34] + ('...' if len(sec['short_title']) > 34 else ''))}</span>"
+        f"<span>{html.escape(sec['short_title'][:36] + ('...' if len(sec['short_title']) > 36 else ''))}</span>"
         f"</a>"
         for sec in sections
     )
     top_jump_html = (
-        "<a class='toc-jump-link' href='#reader-top-anchor' target='_self' style='margin-top:0.45rem; opacity:0.85;'>"
-        "<span class='toc-sec-badge'>↑</span><span>Return to Top</span></a>"
+        "<a class='toc-jump-link' href='#reader-top-anchor' target='_self' style='margin-top:0.35rem; opacity:0.85;'>"
+        "<span class='toc-sec-badge'>↑</span><span>Back to Top of Case</span></a>"
     )
     st.markdown(
         "<div id='sticky-right-nav-marker'></div>"
         "<div class='navigator-card'>"
-        "<div class='navigator-title'>🧭 Outline (Jump to Section)</div>"
+        "<div class='navigator-title'>🧭 On This Case (Click to Jump)</div>"
         f"<div class='toc-nav-list'>{toc_links_html}{top_jump_html}</div>"
         "</div>",
         unsafe_allow_html=True,
     )
 
-    with st.expander("🧠 Recitation Recall Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
-        st.caption("Test doctrinal recall before examining the holding:")
+    with st.expander("🧠 Self-Test Recitation Check", expanded=(st.session_state.study_mode == "⚡ Exam & Recit Review")):
+        st.caption("Test your recall before looking at the holding:")
         if issues_list:
-            st.markdown(f"**Primary Question:**\n\n{issues_list[0]}")
+            st.markdown(f"**Primary Question:**\n{issues_list[0]}")
         else:
-            st.markdown(f"**Decision:** {active_case.get('citation', '')}")
-        if st.checkbox("Reveal Cold-Call Holding & Outcome", key="reveal_recit"):
+            st.markdown(f"**Case:** {active_case.get('citation', '')}")
+        if st.checkbox("Reveal Cold-Call Answer & Outcome", key="reveal_recit"):
             ans = meta.get("cold_call") or meta.get("outcome") or "Refer to Section 6 and Section 6.5 in the digest."
             st.success(ans)
 
-    with st.expander("📋 Export Citation & Verbatim Excerpts", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
+    with st.expander("📋 Copy Citation & Verbatim Quotes", expanded=(st.session_state.study_mode == "🔎 Legal Research")):
         cite_block = f"{active_case.get('citation', '')}"
         if meta.get("citation_metadata"):
             cite_block += f" ({meta['citation_metadata']})"
@@ -2191,20 +2221,22 @@ with nav_container:
         st.code(cite_block, language="markdown")
 
 
+
 # --- 10A. CENTRAL READING PANE ---
 with reader_container:
     st.markdown("<div id='reader-top-anchor'></div>", unsafe_allow_html=True)
 
+    # --- BUILT-IN DUAL AUDIO BRIEFING PLAYER (en-US-AndrewMultilingualNeural) ---
     primer_mp3_path, chapter_mp3_path = get_audio_file_paths(active_case)
     primer_script_txt, chapter_script_txt = build_audio_scripts_for_case(active_case)
 
-    with st.expander("🎧 Audio Case Briefings (AI Voice Synthesis)", expanded=False):
+    with st.expander("🎧 Audio case briefings", expanded=False):
         aud_col1, aud_col2 = st.columns(2, gap="medium")
 
         with aud_col1:
             render_audio_briefing(
-                title="⚡ 60–90s Cold-Call Primer",
-                description="9-step accelerated synthesis of factual trigger, primary issue, ruling, and doctrinal holding.",
+                title="⚡ 1. 60–90s Cold-Call Primer",
+                description="9-step primary-issue flow: law, factual trigger, issue, arguments, ruling, ratio, doctrine, and outcome.",
                 script_text=primer_script_txt,
                 output_path=primer_mp3_path,
                 widget_key=f"audio_primer_{active_case['_uid']}",
@@ -2213,16 +2245,16 @@ with reader_container:
 
         with aud_col2:
             render_audio_briefing(
-                title="📖 Complete Audio Chapter",
-                description="13-step comprehensive breakdown of secondary issues, ratio decidendi, fallo, and separate opinions.",
+                title="📖 2. Complete Audio Chapter",
+                description="Full walkthrough of the primary issue, secondary issues, fallo, separate opinions, and final reckoning point.",
                 script_text=chapter_script_txt,
                 output_path=chapter_mp3_path,
                 widget_key=f"audio_chapter_{active_case['_uid']}",
                 spinner_text="Synthesizing the complete audio chapter…",
             )
 
-        with st.expander("📜 Spoken Scripts & Phonetic Transcripts", expanded=False):
-            t_tab1, t_tab2 = st.tabs(["⚡ Primer Script", "📖 Complete Chapter Script"])
+        with st.expander("📜 View Spoken Audio Transcripts (Primer & Plain-Language Chapter)", expanded=False):
+            t_tab1, t_tab2 = st.tabs(["⚡ 60–90s Primer Script", "📖 Complete Chapter Script"])
             with t_tab1:
                 st.text(primer_script_txt)
             with t_tab2:
@@ -2234,7 +2266,7 @@ with reader_container:
     date_cat = str(active_case.get("date_cataloged") or "Unknown")[:10]
     src_url = safe_external_url(active_case.get("url", ""))
     source_link_html = (
-        f"<a class='source-link' href='{html.escape(src_url)}' target='_blank' rel='noopener noreferrer'>🔗 View SC Decision ↗</a>"
+        f"<a class='source-link' href='{html.escape(src_url)}' target='_blank' rel='noopener noreferrer'>🔗 View Original Supreme Court Decision ↗</a>"
         if src_url
         else "<span>📄 Offline Local Digest</span>"
     )
@@ -2250,10 +2282,10 @@ with reader_container:
         disp_html = f"<p class='digest-p' style='margin-bottom:0;'><strong class='inline-lead'>Disposition:</strong> {format_inline_markdown(outcome_txt)}</p>" if outcome_txt else ""
 
         mode_banner_html = (
-            "<div class='recit-callout' style='margin-bottom: 2rem;'>"
-            "<div style='font-family: var(--font-ui); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-primary); margin-bottom: 0.5rem;'>⚡ Rapid Recitation &amp; Exam Review Lens</div>"
+            "<div class='recit-callout' style='margin-bottom: 1.75rem;'>"
+            "<div style='font-family: var(--font-ui); font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent-navy); margin-bottom: 0.5rem;'>⚡ Rapid Recitation &amp; Exam Review Deck</div>"
             f"<p class='digest-p'><strong class='inline-lead'>Factual Trigger:</strong> {format_inline_markdown(trigger_txt)}</p>"
-            f"<p class='digest-p'><strong class='inline-lead'>30-Second Synthesis:</strong> {format_inline_markdown(cold_call_txt)}</p>"
+            f"<p class='digest-p'><strong class='inline-lead'>30-Second Cold-Call Synthesis:</strong> {format_inline_markdown(cold_call_txt)}</p>"
             f"{magic_html}"
             f"{disp_html}"
             "</div>"
@@ -2267,10 +2299,10 @@ with reader_container:
             for i, q in enumerate(quotes[:3])
         )
         mode_banner_html = (
-            "<div class='fallo-box' style='margin-bottom: 2rem;'>"
-            "<div class='fallo-title'>🔎 Legal Research &amp; Pleading Brief</div>"
-            f"<p class='digest-p'><strong class='inline-lead'>Classification:</strong> {format_inline_markdown(topic_txt)}</p>"
-            f"<p class='digest-p'><strong class='inline-lead'>Procedural Posture:</strong> {format_inline_markdown(posture_txt)}</p>"
+            "<div class='fallo-box' style='margin-bottom: 1.75rem;'>"
+            "<div class='fallo-title'>🔎 Legal Practitioner &amp; Argument Research Brief</div>"
+            f"<p class='digest-p'><strong class='inline-lead'>Primary Doctrinal Classification:</strong> {format_inline_markdown(topic_txt)}</p>"
+            f"<p class='digest-p'><strong class='inline-lead'>Procedural Vehicle:</strong> {format_inline_markdown(posture_txt)}</p>"
             f"{quotes_html}"
             "</div>"
         )
@@ -2303,7 +2335,7 @@ with reader_container:
     )
     st.markdown(reader_html, unsafe_allow_html=True)
 
-# Smooth scroll execution and custom drawer toggle pinning
+# Execute smooth JavaScript scroll for section navigation and case changes.
 scroll_target_id = st.session_state.scroll_to_anchor
 st.session_state.scroll_to_anchor = ""
 
@@ -2313,40 +2345,37 @@ components.html(
       <head>
         <style>
           html, body {{
-            margin: 0; padding: 0; width: 44px; height: 44px;
+            margin: 0; padding: 0; width: 46px; height: 46px;
             overflow: hidden; background: transparent;
           }}
           #drawer-toggle {{
-            width: 40px; height: 40px; margin: 2px;
+            width: 42px; height: 42px; margin: 2px;
             display: flex; align-items: center; justify-content: center;
-            border: 1px solid {('#334155' if st.session_state.theme_mode == 'Dark' else '#CBD5E1')};
-            border-radius: 11px;
-            background: {('#1E293B' if st.session_state.theme_mode == 'Dark' else '#FFFFFF')};
-            color: {('#F8FAFC' if st.session_state.theme_mode == 'Dark' else '#0F172A')};
-            box-shadow: 0 4px 14px rgba(0,0,0,.15);
-            cursor: pointer;
-            transition: all .16s cubic-bezier(0.16, 1, 0.3, 1);
+            border: 1px solid {('#3B475B' if st.session_state.theme_mode == 'Dark' else '#D5DCE5')};
+            border-radius: 12px;
+            background: {('#172235' if st.session_state.theme_mode == 'Dark' else '#FFFFFF')};
+            color: {('#F1F5F9' if st.session_state.theme_mode == 'Dark' else '#172C3F')};
+            box-shadow: 0 2px 10px rgba(0,0,0,.16);
+            cursor: pointer; transition: transform .12s ease, background .12s ease;
           }}
-          #drawer-toggle:hover {{
-            transform: scale(1.05);
-            background: {('#27354E' if st.session_state.theme_mode == 'Dark' else '#F8FAFC')};
-            border-color: #3B82F6;
-          }}
-          #drawer-toggle:focus-visible {{ outline: 3px solid #3B82F6; outline-offset: 2px; }}
-          #drawer-toggle svg {{ width: 20px; height: 20px; }}
+          #drawer-toggle:hover {{ transform: translateY(-1px); background: {('#26364F' if st.session_state.theme_mode == 'Dark' else '#F1F5F9')}; }}
+          #drawer-toggle:focus-visible {{ outline: 3px solid #7C9DCC; outline-offset: 2px; }}
+          #drawer-toggle svg {{ width: 21px; height: 21px; }}
         </style>
       </head>
       <body>
-        <button id="drawer-toggle" type="button" aria-label="Toggle filing cabinet" title="Open or close library cabinet">
+        <button id="drawer-toggle" type="button" aria-label="Toggle filing cabinet" title="Show or hide filing cabinet">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
-            <path d="M9 4.8v14.4M12.5 9h4M12.5 12h4M12.5 15h4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.3" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M9 4.8v14.4M12.5 9h4M12.5 12h4M12.5 15h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
           </svg>
         </button>
         <script>
         (function() {{
             const parentDoc = window.parent.document;
 
+            // Pin this component to the viewport. The outer wrapper is styled
+            // here as well as in the app CSS to tolerate Streamlit DOM changes.
             const frame = window.frameElement;
             const frameWrapper = frame && (
                 frame.closest('[data-testid="stCustomComponentV1"]') ||
@@ -2355,19 +2384,21 @@ components.html(
             );
             if (frameWrapper) {{
                 Object.assign(frameWrapper.style, {{
-                    position: 'fixed', top: '0.55rem', left: '0.75rem',
-                    width: '44px', height: '44px', minWidth: '44px',
-                    margin: '0', padding: '0', zIndex: '999999',
+                    position: 'fixed', top: '0.45rem', left: '0.55rem',
+                    width: '46px', height: '46px', minWidth: '46px',
+                    margin: '0', padding: '0', zIndex: '1000000',
                     pointerEvents: 'auto'
                 }});
             }}
             if (frame) {{
                 Object.assign(frame.style, {{
-                    width: '44px', height: '44px', border: '0',
+                    width: '46px', height: '46px', border: '0',
                     position: 'relative', display: 'block'
                 }});
             }}
 
+            // Read Streamlit's own state instead of maintaining a second,
+            // potentially conflicting sidebar state in Python.
             function sidebarIsExpanded() {{
                 const sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
                 if (sidebar) {{
@@ -2406,6 +2437,7 @@ components.html(
                     '[data-testid="stSidebarCollapsedControl"]',
                     '[data-testid="stSidebarExpandButton"] button',
                     '[data-testid="stSidebarExpandButton"]',
+                    /* Some Streamlit releases reuse this control in both states. */
                     '[data-testid="stSidebarCollapseButton"] button',
                     '[data-testid="stSidebarCollapseButton"]',
                     'button[aria-label*="Expand sidebar" i]',
@@ -2419,6 +2451,8 @@ components.html(
                     return;
                 }}
 
+                // Last-resort fallback: click whichever native sidebar control
+                // Streamlit has mounted, even if its test id changed in a release.
                 const fallback = findControl([
                     '[data-testid="stSidebarCollapseButton"] button',
                     '[data-testid="stSidebarCollapseButton"]',
@@ -2436,12 +2470,14 @@ components.html(
 
             document.getElementById('drawer-toggle').addEventListener('click', toggleSidebar);
 
+            // 1. Handle programmatic smooth scroll after a case selection.
             const targetId = {json.dumps(scroll_target_id)};
             if (targetId) {{
                 const el = parentDoc.getElementById(targetId);
                 if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
             }}
 
+            // 2. Bind smooth scrolling to all right navigator HTML anchor links.
             const tocLinks = parentDoc.querySelectorAll('a.toc-jump-link');
             tocLinks.forEach(link => {{
                 if (!link.dataset.boundSmooth) {{
@@ -2463,7 +2499,7 @@ components.html(
       </body>
     </html>
     """,
-    height=44,
-    width=44,
+    height=46,
+    width=46,
     scrolling=False,
 )
