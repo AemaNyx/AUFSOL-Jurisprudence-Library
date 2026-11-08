@@ -64,11 +64,6 @@ def _cb_select_sidebar_case():
         st.session_state["_sidebar_top_select"] = st.session_state.selected_topic
 
 
-def _cb_show_filing_cabinet():
-    """Restore the left case library without changing the current theme."""
-    st.session_state.focus_mode = False
-
-
 def _cb_on_subject_change():
     chosen = st.session_state.get("_sidebar_subj_select")
     if chosen:
@@ -1291,12 +1286,12 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
 
     css_vars = "\n".join(f"        {k}: {v};" for k, v in colors.items())
 
-    sidebar_visibility_css = ""
+    # Focus mode changes the reading canvas only. Sidebar visibility is managed
+    # by Streamlit's native sidebar state through the persistent floating toggle;
+    # do not use display:none on the sidebar because that breaks its native state.
+    focus_reading_css = ""
     if focus_mode:
-        # Focus mode hides only the left filing cabinet. The right-hand section
-        # navigator remains rendered and sticky so document navigation is retained.
-        sidebar_visibility_css = """
-        section[data-testid="stSidebar"] { display: none !important; }
+        focus_reading_css = """
         .reader-sheet { max-width: 840px !important; margin: 0 auto !important; }
         """
 
@@ -1306,10 +1301,50 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
 
         html {{ scroll-behavior: smooth; }}
 
-        div[data-testid="stToolbar"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        div[data-testid="stDecoration"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        div[data-testid="stStatusWidget"] {{ visibility: hidden; height: 0%; position: fixed; }}
-        header {{ visibility: hidden; height: 0%; }}
+        /* Keep Streamlit's header alive: it contains the native sidebar controls. */
+        header[data-testid="stHeader"] {{
+            visibility: visible !important;
+            height: 2.875rem !important;
+            background: transparent !important;
+            border-bottom: 0 !important;
+        }}
+        div[data-testid="stToolbar"] {{
+            visibility: visible !important;
+            height: auto !important;
+            position: relative !important;
+            background: transparent !important;
+        }}
+        div[data-testid="stDecoration"] {{ display: none !important; }}
+        div[data-testid="stStatusWidget"] {{ display: none !important; }}
+
+        /* Stable, ChatGPT-style floating drawer toggle (the only app iframe). */
+        div[data-testid="stIFrame"],
+        div[data-testid="stCustomComponentV1"] {{
+            position: fixed !important;
+            top: 0.45rem !important;
+            left: 0.55rem !important;
+            width: 46px !important;
+            height: 46px !important;
+            min-width: 46px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            z-index: 1000000 !important;
+            pointer-events: auto !important;
+        }}
+        div[data-testid="stIFrame"] iframe,
+        div[data-testid="stCustomComponentV1"] iframe {{
+            width: 46px !important;
+            height: 46px !important;
+            border: 0 !important;
+            overflow: hidden !important;
+        }}
+
+        /* Make both native states remain available as a fallback. */
+        [data-testid="stSidebarCollapseButton"],
+        [data-testid="collapsedControl"],
+        [data-testid="stExpandSidebarButton"] {{
+            pointer-events: auto !important;
+        }}
 
         :root {{
 {css_vars}
@@ -1876,7 +1911,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str):
             .timeline-row {{ grid-template-columns: 1fr; gap: 0.2rem; }}
         }}
 
-        {sidebar_visibility_css}
+        {focus_reading_css}
         </style>""",
         unsafe_allow_html=True,
     )
@@ -2031,12 +2066,8 @@ mode_options = [
 ]
 size_options = ["Compact", "Standard", "Comfortable"]
 
-cmd_columns = st.columns(
-    [4.1, 1.55, 1.15, 1.0, 1.35] if st.session_state.focus_mode else [4.4, 1.65, 1.2, 1.05],
-    gap="small",
-)
-cmd_c1, cmd_c2, cmd_c3, cmd_c4 = cmd_columns[:4]
-cmd_c5 = cmd_columns[4] if st.session_state.focus_mode else None
+cmd_columns = st.columns([4.4, 1.65, 1.2, 1.05], gap="small")
+cmd_c1, cmd_c2, cmd_c3, cmd_c4 = cmd_columns
 with cmd_c1:
     st.text_input(
         "Search jurisprudence",
@@ -2085,17 +2116,6 @@ with cmd_c4:
         use_container_width=True,
         help="Cycle through Light → Dark → Focus Light → Focus Dark → Light.",
     )
-if cmd_c5 is not None:
-    with cmd_c5:
-        st.button(
-            "🗄️ Show Cabinet",
-            key="restore_filing_cabinet_btn",
-            on_click=_cb_show_filing_cabinet,
-            use_container_width=True,
-            help="Bring back the left filing cabinet and clickable case list.",
-        )
-
-
 # --- 9. BM25 LEXICAL SEARCH RESULTS VIEW ---
 if query_str and bm25 and cases:
 
@@ -2321,39 +2341,165 @@ st.session_state.scroll_to_anchor = ""
 
 components.html(
     f"""
-    <script>
-    (function() {{
-        const parentDoc = window.parent.document;
+    <html>
+      <head>
+        <style>
+          html, body {{
+            margin: 0; padding: 0; width: 46px; height: 46px;
+            overflow: hidden; background: transparent;
+          }}
+          #drawer-toggle {{
+            width: 42px; height: 42px; margin: 2px;
+            display: flex; align-items: center; justify-content: center;
+            border: 1px solid {('#3B475B' if st.session_state.theme_mode == 'Dark' else '#D5DCE5')};
+            border-radius: 12px;
+            background: {('#172235' if st.session_state.theme_mode == 'Dark' else '#FFFFFF')};
+            color: {('#F1F5F9' if st.session_state.theme_mode == 'Dark' else '#172C3F')};
+            box-shadow: 0 2px 10px rgba(0,0,0,.16);
+            cursor: pointer; transition: transform .12s ease, background .12s ease;
+          }}
+          #drawer-toggle:hover {{ transform: translateY(-1px); background: {('#26364F' if st.session_state.theme_mode == 'Dark' else '#F1F5F9')}; }}
+          #drawer-toggle:focus-visible {{ outline: 3px solid #7C9DCC; outline-offset: 2px; }}
+          #drawer-toggle svg {{ width: 21px; height: 21px; }}
+        </style>
+      </head>
+      <body>
+        <button id="drawer-toggle" type="button" aria-label="Toggle filing cabinet" title="Show or hide filing cabinet">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.3" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M9 4.8v14.4M12.5 9h4M12.5 12h4M12.5 15h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+        </button>
+        <script>
+        (function() {{
+            const parentDoc = window.parent.document;
 
-        // 1. Handle programmatic smooth scroll after a case selection
-        const targetId = {json.dumps(scroll_target_id)};
-        if (targetId) {{
-            const el = parentDoc.getElementById(targetId);
-            if (el) {{
-                el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-            }}
-        }}
-
-        // 2. Bind smooth scrolling to all Right Navigator HTML anchor links
-        const tocLinks = parentDoc.querySelectorAll('a.toc-jump-link');
-        tocLinks.forEach(link => {{
-            if (!link.dataset.boundSmooth) {{
-                link.dataset.boundSmooth = 'true';
-                link.addEventListener('click', function(e) {{
-                    const href = this.getAttribute('href');
-                    if (href && href.startsWith('#')) {{
-                        const target = parentDoc.getElementById(href.substring(1));
-                        if (target) {{
-                            e.preventDefault();
-                            target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
-                        }}
-                    }}
+            // Pin this component to the viewport. The outer wrapper is styled
+            // here as well as in the app CSS to tolerate Streamlit DOM changes.
+            const frame = window.frameElement;
+            const frameWrapper = frame && (
+                frame.closest('[data-testid="stCustomComponentV1"]') ||
+                frame.closest('[data-testid="stIFrame"]') ||
+                frame.parentElement
+            );
+            if (frameWrapper) {{
+                Object.assign(frameWrapper.style, {{
+                    position: 'fixed', top: '0.45rem', left: '0.55rem',
+                    width: '46px', height: '46px', minWidth: '46px',
+                    margin: '0', padding: '0', zIndex: '1000000',
+                    pointerEvents: 'auto'
                 }});
             }}
-        }});
+            if (frame) {{
+                Object.assign(frame.style, {{
+                    width: '46px', height: '46px', border: '0',
+                    position: 'relative', display: 'block'
+                }});
+            }}
 
-    }})();
-    </script>
+            // Read Streamlit's own state instead of maintaining a second,
+            // potentially conflicting sidebar state in Python.
+            function sidebarIsExpanded() {{
+                const sidebar = parentDoc.querySelector('[data-testid="stSidebar"]');
+                if (sidebar) {{
+                    const expanded = sidebar.getAttribute('aria-expanded');
+                    if (expanded === 'true') return true;
+                    if (expanded === 'false') return false;
+                }}
+                return Boolean(parentDoc.querySelector('[data-testid="stSidebarCollapseButton"]'));
+            }}
+
+            function findControl(selectors) {{
+                for (const selector of selectors) {{
+                    const found = parentDoc.querySelector(selector);
+                    if (found && !found.disabled) {{
+                        const nestedButton = found.matches('button') ? found : found.querySelector('button');
+                        return nestedButton || found;
+                    }}
+                }}
+                return null;
+            }}
+
+            function toggleSidebar() {{
+                const expanded = sidebarIsExpanded();
+                const collapseSelectors = [
+                    '[data-testid="stSidebarCollapseButton"] button',
+                    '[data-testid="stSidebarCollapseButton"]',
+                    'button[aria-label*="Collapse sidebar" i]',
+                    'button[title*="Collapse sidebar" i]'
+                ];
+                const expandSelectors = [
+                    '[data-testid="stExpandSidebarButton"] button',
+                    '[data-testid="stExpandSidebarButton"]',
+                    '[data-testid="collapsedControl"] button',
+                    '[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"] button',
+                    '[data-testid="stSidebarCollapsedControl"]',
+                    '[data-testid="stSidebarExpandButton"] button',
+                    '[data-testid="stSidebarExpandButton"]',
+                    /* Some Streamlit releases reuse this control in both states. */
+                    '[data-testid="stSidebarCollapseButton"] button',
+                    '[data-testid="stSidebarCollapseButton"]',
+                    'button[aria-label*="Expand sidebar" i]',
+                    'button[title*="Expand sidebar" i]',
+                    'button[aria-label*="Open sidebar" i]',
+                    'button[title*="Open sidebar" i]'
+                ];
+                const target = findControl(expanded ? collapseSelectors : expandSelectors);
+                if (target) {{
+                    target.click();
+                    return;
+                }}
+
+                // Last-resort fallback: click whichever native sidebar control
+                // Streamlit has mounted, even if its test id changed in a release.
+                const fallback = findControl([
+                    '[data-testid="stSidebarCollapseButton"] button',
+                    '[data-testid="stSidebarCollapseButton"]',
+                    '[data-testid="stExpandSidebarButton"] button',
+                    '[data-testid="stExpandSidebarButton"]',
+                    '[data-testid="collapsedControl"] button',
+                    '[data-testid="collapsedControl"]',
+                    '[data-testid="stSidebarCollapsedControl"] button',
+                    '[data-testid="stSidebarCollapsedControl"]',
+                    '[data-testid="stSidebarExpandButton"] button',
+                    '[data-testid="stSidebarExpandButton"]'
+                ]);
+                if (fallback) fallback.click();
+            }}
+
+            document.getElementById('drawer-toggle').addEventListener('click', toggleSidebar);
+
+            // 1. Handle programmatic smooth scroll after a case selection.
+            const targetId = {json.dumps(scroll_target_id)};
+            if (targetId) {{
+                const el = parentDoc.getElementById(targetId);
+                if (el) el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+            }}
+
+            // 2. Bind smooth scrolling to all right navigator HTML anchor links.
+            const tocLinks = parentDoc.querySelectorAll('a.toc-jump-link');
+            tocLinks.forEach(link => {{
+                if (!link.dataset.boundSmooth) {{
+                    link.dataset.boundSmooth = 'true';
+                    link.addEventListener('click', function(e) {{
+                        const href = this.getAttribute('href');
+                        if (href && href.startsWith('#')) {{
+                            const target = parentDoc.getElementById(href.substring(1));
+                            if (target) {{
+                                e.preventDefault();
+                                target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                            }}
+                        }}
+                    }});
+                }}
+            }});
+        }})();
+        </script>
+      </body>
+    </html>
     """,
-    height=0,
+    height=46,
+    width=46,
+    scrolling=False,
 )
