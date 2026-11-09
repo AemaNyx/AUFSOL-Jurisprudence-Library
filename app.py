@@ -443,8 +443,79 @@ def format_inline_markdown(text: str, highlight_terms: Optional[List[str]] = Non
     return escaped
 
 
+def _is_render_boundary(line: str) -> bool:
+    """Return True when a line begins a new structured block, not a continuation paragraph."""
+    candidate = line.strip()
+    if not candidate:
+        return False
+    if candidate.startswith(("###", "####", ">")):
+        return True
+    if INLINE_LABEL_PATTERN.match(candidate):
+        return True
+    if STANDALONE_HEADING_RE.match(candidate):
+        return True
+    if re.match(r"^(?:\*\*)?[A-Z]\.\s+(?:Petitioner|Respondent|Public|Private|OSG|Accused|Defense)", candidate):
+        return True
+    if re.match(r"^(?:\*\*)?\d{1,2}[.)](?:\*\*)?\s+", candidate):
+        return True
+    if re.match(r"^\*\*([^*:\n]{2,65}?)(?::)?\*\*\s*: ?\s*.+$", candidate):
+        return True
+    if re.match(r"^\*\*[^*:\n]{2,65}(?::)?\*\*\s*: ?$", candidate):
+        return True
+    if re.match(r"^\*\*[^*\n]{2,80}\*\*:?\s*$", candidate):
+        return True
+    return False
+
+
+def _merge_detached_inline_labels(lines: List[str]) -> List[str]:
+    """Attach body paragraphs to labels that were emitted on a separate Markdown line.
+
+    Some source digests use a label-only line (for example, '**Factual Trigger:**')
+    followed by the actual paragraph after a blank line. Without this normalization,
+    the renderer creates an empty callout and leaves the content outside it.
+    """
+    merged: List[str] = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        stripped = raw.strip()
+        match = INLINE_LABEL_PATTERN.match(stripped)
+        generic_label_match = re.match(r"^\*\*([^*:\n]{2,65}?)(?::)?\*\*\s*: ?$", stripped)
+        is_known_empty_label = bool(match and not clean_stray_asterisks(match.group(2)))
+        is_generic_empty_label = bool(generic_label_match)
+        if is_known_empty_label or is_generic_empty_label:
+            label = clean_stray_asterisks(match.group(1)) if is_known_empty_label else clean_stray_asterisks(generic_label_match.group(1))
+            j = i + 1
+            # Blank lines may separate the label from its body in generated digests.
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+
+            if j < len(lines) and not _is_render_boundary(lines[j]):
+                body_parts: List[str] = []
+                k = j
+                while k < len(lines):
+                    candidate = lines[k].strip()
+                    if not candidate:
+                        break
+                    if _is_render_boundary(candidate):
+                        break
+                    body_parts.append(candidate)
+                    k += 1
+                if body_parts:
+                    body = " ".join(body_parts)
+                    # Keep generic bold labels bold; known labels are parsed by INLINE_LABEL_PATTERN.
+                    merged.append(f"{label}: {body}" if is_known_empty_label else f"**{label}:** {body}")
+                    i = k
+                    continue
+
+        merged.append(raw)
+        i += 1
+    return merged
+
+
 def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms: Optional[List[str]] = None) -> str:
     html_parts: List[str] = []
+    lines = _merge_detached_inline_labels(lines)
     for raw in lines:
         s = raw.strip()
         if not s:
@@ -506,6 +577,10 @@ def render_section_lines_to_html(lines: List[str], sec_num: str, highlight_terms
         if m_inline:
             lbl = clean_stray_asterisks(m_inline.group(1))
             val = clean_stray_asterisks(m_inline.group(2))
+            # Empty label-only lines are either merged with their following paragraph
+            # above or omitted; never draw an empty text box.
+            if not val:
+                continue
             if "factual trigger" in lbl.lower():
                 html_parts.append(
                     f"<div class='trigger-box'><div class='trigger-title'>⚡ {html.escape(lbl)}</div><div class='trigger-text'>{format_inline_markdown(val, highlight_terms)}</div></div>"
@@ -1657,17 +1732,24 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
     .digest-section-block { margin-top:2.1rem; padding-top:.1rem; scroll-margin-top:24px; }
     .digest-section-block:first-child { margin-top:0; }
     .digest-section-header {
-      display:flex; align-items:baseline; gap:.75rem;
-      border-bottom:1px solid var(--border); padding-bottom:.52rem; margin-bottom:1rem;
+      display:flex; align-items:flex-start; gap:.8rem;
+      border-bottom:1px solid var(--border); padding-bottom:.62rem; margin-bottom:1.05rem;
     }
     .sec-num-badge {
-      color:var(--text-muted) !important; font:600 .73rem var(--font-ui);
-      letter-spacing:.08em; flex:none;
+      display:inline-block; flex:0 0 auto;
+      color:var(--text-primary) !important;
+      font-family:var(--font-display) !important;
+      font-size:var(--heading-size) !important;
+      font-weight:600 !important;
+      line-height:1.12 !important;
+      letter-spacing:-.02em !important;
+      min-width:2.05ch; text-align:left;
     }
     .reader-sheet h3.sec-heading-text {
       font-family:var(--font-display) !important; font-size:var(--heading-size) !important;
       font-weight:600 !important; line-height:1.12 !important;
       color:var(--text-primary) !important; margin:0 !important;
+      min-width:0; flex:1 1 auto;
     }
     .reader-sheet .legal-prose, .reader-sheet .digest-p,
     .reader-sheet .timeline-event, .reader-sheet .num-content,
@@ -1693,10 +1775,14 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       padding:.95rem 1.15rem; margin:1rem 0 1.25rem;
     }
     .trigger-title, .quote-callout-label, .fallo-title {
-      font-family:var(--font-ui) !important; font-size:.7rem !important;
-      font-weight:700 !important; letter-spacing:.09em; text-transform:uppercase;
-      color:var(--text-muted) !important; margin-bottom:.35rem;
+      font-family:var(--font-ui) !important; font-size:.72rem !important;
+      font-weight:700 !important; letter-spacing:.075em; text-transform:uppercase;
+      color:var(--text-muted) !important; margin:0 0 .55rem 0;
     }
+    .trigger-text, .fallo-text, .quote-callout-body {
+      display:block; margin:0 !important; padding:0 !important;
+    }
+    .trigger-box:has(.trigger-text:empty), .fallo-box:has(.fallo-text:empty) { display:none !important; }
     .recit-label, .verdict-tag { font-family:var(--font-ui) !important; font-weight:700 !important; color:var(--text-primary) !important; }
     .timeline-row { display:grid; grid-template-columns:145px 1fr; gap:1rem; padding:.7rem 0; border-bottom:1px solid var(--border); align-items:baseline; }
     .timeline-date { font:700 .83rem var(--font-ui) !important; color:var(--text-primary) !important; }
@@ -1716,24 +1802,28 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       padding-right:.15rem !important; z-index:8 !important;
     }
     .navigator-card {
+      width:100%; box-sizing:border-box;
       background:var(--bg-elevated); border:1px solid var(--border);
-      border-radius:8px; padding:1rem .9rem; box-shadow:none; margin-bottom:.7rem;
+      border-radius:9px; padding:1.15rem 1.05rem; box-shadow:var(--shadow); margin-bottom:.8rem;
     }
     .navigator-title {
-      font-family:var(--font-display) !important; font-size:1.35rem;
-      font-weight:600; line-height:1.05; color:var(--text-primary) !important;
-      margin-bottom:.65rem; padding:0 .2rem .65rem; border-bottom:1px solid var(--border);
+      font-family:var(--font-display) !important; font-size:1.48rem;
+      font-weight:600; line-height:1.12; color:var(--text-primary) !important;
+      margin-bottom:.7rem; padding:0 .2rem .7rem; border-bottom:1px solid var(--border);
     }
-    .toc-nav-list { display:flex; flex-direction:column; gap:.18rem; margin-top:.35rem; }
+    .toc-nav-list { display:flex; flex-direction:column; gap:.24rem; margin-top:.4rem; }
     a.toc-jump-link {
-      display:flex; align-items:center; gap:.5rem; padding:.43rem .5rem;
-      border-radius:5px; color:var(--text-secondary) !important;
-      text-decoration:none !important; font:500 .76rem/1.3 var(--font-ui);
+      display:flex; align-items:flex-start; gap:.62rem; padding:.56rem .58rem;
+      min-height:2.35rem; box-sizing:border-box;
+      border-radius:6px; color:var(--text-secondary) !important;
+      text-decoration:none !important; font:500 .9rem/1.38 var(--font-ui);
+      white-space:normal !important; overflow-wrap:anywhere; word-break:normal;
       transition:background .12s ease, color .12s ease;
     }
+    a.toc-jump-link > span:last-child { display:block; flex:1 1 auto; min-width:0; }
     a.toc-jump-link:hover, a.toc-jump-link.active { background:var(--accent-soft); color:var(--text-primary) !important; }
-    a.toc-jump-link.active { font-weight:700; box-shadow:inset 2px 0 0 var(--accent); }
-    .toc-sec-badge { color:var(--text-muted) !important; font:600 .65rem var(--font-ui); min-width:1.25rem; }
+    a.toc-jump-link.active { font-weight:700; box-shadow:inset 3px 0 0 var(--accent); }
+    .toc-sec-badge { color:var(--text-muted) !important; font:600 .76rem/1.4 var(--font-ui); min-width:1.55rem; flex:0 0 auto; font-variant-numeric:tabular-nums; }
     .search-mark { background:#FFE38B !important; color:#141314 !important; }
 
     /* Focus mode: reading canvas narrows; the cabinet and right navigator remain available. */
@@ -1769,7 +1859,7 @@ def inject_custom_css(theme: str, focus_mode: bool, font_scale: str, cabinet_ope
       .masthead-icon { width:34px; height:34px; }
       .masthead-stats { display:none; }
       .reader-sheet h1.case-main-title { font-size:2.25rem !important; }
-      .reader-sheet h3.sec-heading-text { font-size:1.35rem !important; }
+      .reader-sheet h3.sec-heading-text, .reader-sheet .sec-num-badge { font-size:1.35rem !important; }
       .toc-nav-list { grid-template-columns:1fr 1fr; }
       .search-card { padding:.85rem .9rem; min-height:96px; }
       .search-card-title { font-size:1.2rem; }
@@ -2098,7 +2188,7 @@ quotes = parsed["quotes"]
 issues_list = parsed["issues"]
 
 reader_container, nav_container = st.columns(
-    [3.15, 1.05] if st.session_state.focus_mode else [3.25, 1.15],
+    [2.7, 1.3],
     gap="large",
 )
 
@@ -2109,7 +2199,7 @@ with nav_container:
     toc_links_html = "".join(
         f"<a class='toc-jump-link' href='#{html.escape(sec['anchor'])}' target='_self'>"
         f"<span class='toc-sec-badge'>{html.escape(sec['num'])}</span>"
-        f"<span>{html.escape(sec['short_title'][:36] + ('...' if len(sec['short_title']) > 36 else ''))}</span>"
+        f"<span>{html.escape(sec['short_title'])}</span>"
         f"</a>"
         for sec in sections
     )
